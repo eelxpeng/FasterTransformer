@@ -1,0 +1,7 @@
+
+The model definition and the config are in modeling_atm_decoder.py and configuration_atm_decoder.py respectively.
+There is a script in test.py to run the model. Pip install transformers and torch before running.
+
+pip install torch transformers
+
+The "test" model config in test.py can be used to run a quick test.
