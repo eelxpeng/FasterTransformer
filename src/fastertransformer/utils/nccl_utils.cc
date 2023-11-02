@@ -13,7 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
+#include <assert.h>
+#include <sstream>
+#include <vector>
+#include <nccl.h>
+#include <unistd.h>
+#include "src/fastertransformer/utils/cuda_utils.h"
 #include "src/fastertransformer/utils/nccl_utils.h"
 
 namespace fastertransformer {
@@ -305,6 +310,37 @@ void ftNcclParamDestroy(NcclParam& param)
 #endif
 }
 
+void ftGetUniqueNcclId(ncclUniqueId& uid, bool is_root, std::string qualifier) {
+    std::string path = "/tmp/nccl_uid_" + qualifier;
+    if (is_root) {
+        NCCLCHECK(ncclGetUniqueId(&uid));
+        FILE* file = fopen(path.c_str(), "wb");
+        size_t bytes_written = fwrite(uid.internal, sizeof(char), NCCL_UNIQUE_ID_BYTES, file);
+        FT_CHECK(bytes_written == NCCL_UNIQUE_ID_BYTES);
+        fclose(file);
+    }
+
+    while (access(path.c_str(), F_OK) != 0) {
+        sleep(1);
+    }
+    FILE* file = fopen(path.c_str(), "rb");
+    size_t bytes_read = fread(uid.internal, sizeof(char), NCCL_UNIQUE_ID_BYTES, file);
+    FT_CHECK(bytes_read == NCCL_UNIQUE_ID_BYTES);
+    fclose(file);
+}
+
+std::vector<uint8_t> parse_bytes_from_str(const std::string& str) {
+    std::stringstream iss{str};
+    int num;
+    std::vector<uint8_t> nums;
+    while (iss >> num) {
+        nums.push_back((uint8_t) num);
+    }
+    FT_CHECK_WITH_INFO(nums.size() == NCCL_UNIQUE_ID_BYTES, fmtstr("expected %d bytes but got %d", NCCL_UNIQUE_ID_BYTES, nums.size()));
+    return nums;
+}
+
+
 void ftNcclInitialize(NcclParam& tensor_para,
                       NcclParam& pipeline_para,
                       const int  tensor_para_size,
@@ -336,7 +372,7 @@ void ftNcclInitialize(NcclParam& tensor_para,
     FT_CHECK(tensor_para.nccl_comm_ == nullptr);
     FT_CHECK(pipeline_para.nccl_comm_ == nullptr);
     FT_CHECK(tensor_para_size > 0);
-    FT_CHECK(pipeline_para_size == 1); // Pipeline parallelism not used
+    FT_CHECK(pipeline_para_size > 0);
 
     if (tensor_para_size == 1 && pipeline_para_size == 1) {
         FT_LOG_WARNING("Skip NCCL initialization since requested tensor/pipeline parallel sizes are equals to 1.");
@@ -347,50 +383,43 @@ void ftNcclInitialize(NcclParam& tensor_para,
         return;
     }
 
-    int mpi_initialized;
-    MPICHECK(MPI_Initialized(&mpi_initialized));
-    FT_CHECK_WITH_INFO(mpi_initialized, "Fail to nccl initialization because MPI is not initialized.");
-
-    int world_rank, world_size;
-    MPICHECK(MPI_Comm_rank(MPI_COMM_WORLD, &world_rank));
-    MPICHECK(MPI_Comm_size(MPI_COMM_WORLD, &world_size));
-
-    const int tp_rank = world_rank % tensor_para_size;
-    const int sub_group = static_cast<int>(std::floor(static_cast<double>(world_rank) / static_cast<double>(tensor_para_size)));
-    const int id_index = sub_group * tensor_para_size;
-
+    // reading from env variables set by torchrun rather than using MPI
+    const int tp_rank = atoi(std::getenv("FT_TP_RANK"));  // rank within TP-group
+    const int pp_rank = atoi(std::getenv("FT_PP_RANK"));  // rank within PP-group
+    ncclUniqueId tp_uid;
+    std::vector<uint8_t> tp_uid_bytes = parse_bytes_from_str(std::string(std::getenv("FT_TP_UID")));
+    memcpy(tp_uid.internal, tp_uid_bytes.data(), NCCL_UNIQUE_ID_BYTES);
+    ncclUniqueId pp_uid;
+    std::vector<uint8_t> pp_uid_bytes = parse_bytes_from_str(std::string(std::getenv("FT_PP_UID")));
+    memcpy(pp_uid.internal, pp_uid_bytes.data(), NCCL_UNIQUE_ID_BYTES);
     FT_LOG_INFO(
-        "Initializing NCCL with rank=%d, world_size=%d, sub_group=%d, tp_rank=%d, tp_size=%d",
-        world_rank,
-        world_size,
-        sub_group,
+        "Initializing NCCL with tp_rank=%d, pp_rank=%d, tp_size=%d, pp_size=%d",
         tp_rank,
-        tensor_para_size
+        pp_rank,
+        tensor_para_size,
+        pipeline_para_size
     );
+    FT_LOG_INFO("Initializing TP communicator with tp_rank=%d, pp_rank=%d, uid=%s", tp_rank, pp_rank, tp_uid.internal);
 
-    // Initialize tensor parallelism groups.
-    // Each process creates an NCCL ID and they are all gathered together but only
-    // one is used for each sub-group (the first one out of every tensor_para_size).
-
-    ncclUniqueId nccl_id;
-    NCCLCHECK(ncclGetUniqueId(&nccl_id));
-
-    std::vector<ncclUniqueId> nccl_ids;
-    nccl_ids.resize(world_size);
-
-    MPICHECK(MPI_Allgather(&nccl_id, sizeof(ncclUniqueId), MPI_UINT8_T, nccl_ids.data(), sizeof(ncclUniqueId), MPI_UINT8_T, MPI_COMM_WORLD));
-
-    ncclUniqueId tp_uid = nccl_ids[id_index];
+    FT_LOG_DEBUG("Initialize NCCL communicators.");
     ncclComm_t tp_nccl_comm;
     NCCLCHECK(ncclCommInitRank(&tp_nccl_comm, tensor_para_size, tp_uid, tp_rank));
+
+    FT_LOG_INFO("Initializing PP communicator with rank=%d, uid=%s", tp_rank, tp_uid.internal);
+    ncclComm_t pp_nccl_comm;
+    NCCLCHECK(ncclCommInitRank(&pp_nccl_comm, pipeline_para_size, pp_uid, pp_rank));
 
     tensor_para.world_size_   = tensor_para_size;
     tensor_para.rank_         = tp_rank;
     tensor_para.nccl_uid_     = tp_uid;
     tensor_para.nccl_comm_    = tp_nccl_comm;
     pipeline_para.world_size_ = pipeline_para_size;
-    pipeline_para.rank_       = 0;
-    FT_LOG_INFO("NCCL initialized tensor_para=%s", tensor_para.toString().c_str());
+    pipeline_para.rank_       = pp_rank;
+    pipeline_para.nccl_uid_   = pp_uid;
+    pipeline_para.nccl_comm_  = pp_nccl_comm;
+    FT_LOG_INFO("NCCL initialized tensor_para=%s pipeline_para=%s",
+                tensor_para.toString().c_str(),
+                pipeline_para.toString().c_str());
 #endif
     FT_LOG_DEBUG("%s stop", __PRETTY_FUNCTION__);
 }
