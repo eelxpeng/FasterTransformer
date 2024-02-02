@@ -37,6 +37,7 @@ class LlamaContextDecoder: public BaseLayer {
 private:
     // meta data
     size_t head_num_;
+    size_t kv_head_num_;
     size_t size_per_head_;
     size_t inter_size_;
     size_t num_layer_;
@@ -83,6 +84,7 @@ protected:
 
 public:
     LlamaContextDecoder(size_t                              head_num,
+                        size_t                              kv_head_num,
                         size_t                              size_per_head,
                         size_t                              inter_size,
                         size_t                              num_layer,

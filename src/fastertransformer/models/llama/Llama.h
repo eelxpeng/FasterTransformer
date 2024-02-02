@@ -33,6 +33,7 @@ class Llama: public BaseLayer {
 private:
     // meta data
     size_t head_num_;
+    size_t kv_head_num_;
     size_t size_per_head_;
     size_t inter_size_;
     size_t num_layer_;
@@ -47,7 +48,7 @@ private:
     int    end_id_;
     size_t hidden_units_;
 
-    size_t    local_head_num_;
+    size_t    local_kv_head_num_;
     NcclParam tensor_para_;
     NcclParam pipeline_para_;
 
@@ -142,6 +143,7 @@ protected:
 
 public:
     Llama(size_t                              head_num,
+          size_t                              kv_head_num,
           size_t                              size_per_head,
           size_t                              inter_size,
           size_t                              num_layer,
@@ -171,6 +173,7 @@ public:
           int                                 enable_custom_all_reduce = 0);
 
     Llama(size_t                              head_num,
+          size_t                              kv_head_num,
           size_t                              size_per_head,
           size_t                              inter_size,
           size_t                              num_layer,

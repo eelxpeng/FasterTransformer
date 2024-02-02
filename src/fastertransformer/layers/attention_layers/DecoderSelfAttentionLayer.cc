@@ -48,6 +48,7 @@ void fusedQKV_masked_attention_dispatch(const T*     qkv_buf,
                                         const int    inference_batch_size,
                                         const int    beam_width,
                                         const int    head_num,
+                                        const int    kv_head_num,
                                         const int    size_per_head,
                                         const int    rotary_embedding_dim,
                                         const float  rotary_position_interpolation_factor,
@@ -77,8 +78,8 @@ void fusedQKV_masked_attention_dispatch(const T*     qkv_buf,
     int hidden_units = head_num * size_per_head;
     if (qkv_bias != nullptr) {
         params.q_bias = reinterpret_cast<const DataType*>(qkv_bias);
-        params.k_bias = reinterpret_cast<const DataType*>(qkv_bias) + hidden_units;
-        params.v_bias = reinterpret_cast<const DataType*>(qkv_bias) + 2 * hidden_units;
+        params.k_bias = reinterpret_cast<const DataType*>(qkv_bias) + head_num * size_per_head;
+        params.v_bias = reinterpret_cast<const DataType*>(qkv_bias) + (head_num + kv_head_num) * size_per_head;
     }
     else {
         params.q_bias = nullptr;
@@ -92,12 +93,12 @@ void fusedQKV_masked_attention_dispatch(const T*     qkv_buf,
     // Set the input buffers.
     params.q = reinterpret_cast<const DataType*>(qkv_buf);
     if (int8_mode != 2) {
-        params.k = reinterpret_cast<const DataType*>(qkv_buf) + hidden_units;
-        params.v = reinterpret_cast<const DataType*>(qkv_buf) + 2 * hidden_units;
+        params.k = reinterpret_cast<const DataType*>(qkv_buf) + head_num * size_per_head;
+        params.v = reinterpret_cast<const DataType*>(qkv_buf) + (head_num + kv_head_num) * size_per_head;
     }
     else {
-        params.k = reinterpret_cast<const DataType*>(reinterpret_cast<const int8_t*>(qkv_buf) + hidden_units);
-        params.v = reinterpret_cast<const DataType*>(reinterpret_cast<const int8_t*>(qkv_buf) + 2 * hidden_units);
+        params.k = reinterpret_cast<const DataType*>(reinterpret_cast<const int8_t*>(qkv_buf) + head_num * size_per_head);
+        params.v = reinterpret_cast<const DataType*>(reinterpret_cast<const int8_t*>(qkv_buf) + (head_num + kv_head_num) * size_per_head);
     }
     params.stride   = 3 * hidden_units;
     params.finished = const_cast<bool*>(finished);
@@ -114,6 +115,7 @@ void fusedQKV_masked_attention_dispatch(const T*     qkv_buf,
     // timestep adding max_prefix_prompt_length for shared memory size calculation and rotary embedding computation
     params.timestep             = step + max_prefix_prompt_length - 1;
     params.num_heads            = head_num;
+    params.num_kv_heads         = kv_head_num;
     params.hidden_size_per_head = size_per_head;
     params.rotary_embedding_dim = rotary_embedding_dim;
     params.rotary_position_interpolation_factor = rotary_position_interpolation_factor;
@@ -167,9 +169,10 @@ void fusedQKV_masked_attention_dispatch(const T*     qkv_buf,
                                                      const int    inference_batch_size,                                \
                                                      const int    beam_width,                                          \
                                                      const int    head_num,                                            \
+                                                     const int    kv_head_num,                                         \
                                                      const int    size_per_head,                                       \
                                                      const int    rotary_embedding_dim,                                \
-                                                     const float  rotary_position_interpolation_factor,                               \
+                                                     const float  rotary_position_interpolation_factor,                \
                                                      const bool   neox_rotary_style,                                   \
                                                      const int    memory_max_len,                                      \
                                                      const int*   prefix_prompt_lengths,                               \
@@ -208,8 +211,9 @@ void DecoderSelfAttentionLayer<T>::allocateBuffer(size_t batch_size)
 {
     const size_t type_size = int8_mode_ == 2 ? sizeof(int8_t) : sizeof(T);
     FT_LOG_DEBUG(__PRETTY_FUNCTION__);
+    const int local_q_kv_head_num = local_head_num_ + 2 * local_kv_head_num_;
     qkv_buf_ =
-        reinterpret_cast<T*>(allocator_->reMalloc(qkv_buf_, type_size * batch_size * 3 * local_hidden_units_, false));
+        reinterpret_cast<T*>(allocator_->reMalloc(qkv_buf_, type_size * batch_size * local_q_kv_head_num * size_per_head_, false));
     context_buf_ =
         reinterpret_cast<T*>(allocator_->reMalloc(context_buf_, type_size * batch_size * local_hidden_units_, false));
 
@@ -260,8 +264,10 @@ bool DecoderSelfAttentionLayer<T>::isValidBatchSize(size_t batch_size)
 template<typename T>
 DecoderSelfAttentionLayer<T>::DecoderSelfAttentionLayer(size_t           max_batch_size,
                                                         size_t           head_num,
+                                                        size_t           kv_head_num,
                                                         size_t           size_per_head,
                                                         size_t           local_head_num,
+                                                        size_t           local_kv_head_num,
                                                         size_t           rotary_embedding_dim,
                                                         bool             neox_rotary_style,
                                                         size_t           d_model,
@@ -275,9 +281,11 @@ DecoderSelfAttentionLayer<T>::DecoderSelfAttentionLayer(size_t           max_bat
     BaseAttentionLayer<T>(stream, cublas_wrapper, allocator, is_free_buffer_after_forward, sparse),
     max_batch_size_(max_batch_size),
     head_num_(head_num),
+    kv_head_num_(kv_head_num),
     size_per_head_(size_per_head),
     hidden_units_(head_num_ * size_per_head_),
     local_head_num_(local_head_num),
+    local_kv_head_num_(local_kv_head_num),
     local_hidden_units_(local_head_num_ * size_per_head_),
     rotary_embedding_dim_(rotary_embedding_dim),
     neox_rotary_style_(neox_rotary_style),
@@ -307,7 +315,9 @@ DecoderSelfAttentionLayer<T>::DecoderSelfAttentionLayer(size_t           max_bat
                                                         int              int8_mode):
     DecoderSelfAttentionLayer<T>(max_batch_size,
                                  head_num,
+                                 head_num,
                                  size_per_head,
+                                 head_num,
                                  head_num,
                                  0,
                                  false,
@@ -335,7 +345,9 @@ DecoderSelfAttentionLayer<T>::DecoderSelfAttentionLayer(size_t           max_bat
                                                         int              int8_mode):
     DecoderSelfAttentionLayer<T>(max_batch_size,
                                  head_num,
+                                 head_num,
                                  size_per_head,
+                                 head_num,
                                  head_num,
                                  0,
                                  false,
@@ -363,7 +375,9 @@ DecoderSelfAttentionLayer<T>::DecoderSelfAttentionLayer(size_t           max_bat
                                                         int              int8_mode):
     DecoderSelfAttentionLayer<T>(max_batch_size,
                                  head_num,
+                                 head_num,
                                  size_per_head,
+                                 local_head_num,
                                  local_head_num,
                                  0,
                                  false,
@@ -393,7 +407,9 @@ DecoderSelfAttentionLayer<T>::DecoderSelfAttentionLayer(size_t           max_bat
                                                         int              int8_mode):
     DecoderSelfAttentionLayer<T>(max_batch_size,
                                  head_num,
+                                 head_num,
                                  size_per_head,
+                                 local_head_num,
                                  local_head_num,
                                  0,
                                  false,
@@ -423,7 +439,9 @@ DecoderSelfAttentionLayer<T>::DecoderSelfAttentionLayer(size_t           max_bat
                                                         int              int8_mode):
     DecoderSelfAttentionLayer<T>(max_batch_size,
                                  head_num,
+                                 head_num,
                                  size_per_head,
+                                 local_head_num,
                                  local_head_num,
                                  rotary_embedding_dim,
                                  neox_rotary_style,
@@ -442,8 +460,10 @@ template<typename T>
 DecoderSelfAttentionLayer<T>::DecoderSelfAttentionLayer(DecoderSelfAttentionLayer<T> const& attention_layer):
     DecoderSelfAttentionLayer<T>(attention_layer.max_batch_size_,
                                  attention_layer.head_num_,
+                                 attention_layer.kv_head_num_,
                                  attention_layer.size_per_head_,
                                  attention_layer.local_head_num_,
+                                 attention_layer.local_kv_head_num_,
                                  attention_layer.rotary_embedding_dim_,
                                  attention_layer.neox_rotary_style_,
                                  attention_layer.d_model_,
@@ -579,15 +599,15 @@ void DecoderSelfAttentionLayer<T>::forward(TensorMap*                output_tens
         else {
             cublas_wrapper_->Gemm(CUBLAS_OP_N,
                                   CUBLAS_OP_N,
-                                  3 * local_hidden_units_,  // n
+                                  (local_head_num_ + 2 * local_kv_head_num_) * size_per_head_ ,  // n
                                   batch_size,
                                   d_model_,  // k
                                   attention_weights->query_weight.kernel,
-                                  3 * local_hidden_units_,  // n
+                                  (local_head_num_ + 2 * local_kv_head_num_) * size_per_head_,  // n
                                   attention_input,
                                   d_model_,  // k
                                   qkv_buf_,
-                                  3 * local_hidden_units_ /* n */);
+                                  (local_head_num_ + 2 * local_kv_head_num_) * size_per_head_/* n */);
         }
     }
     sync_check_cuda_error();
@@ -608,6 +628,7 @@ void DecoderSelfAttentionLayer<T>::forward(TensorMap*                output_tens
         batch_size,
         beam_width,
         local_head_num_,
+        local_kv_head_num_,
         size_per_head_,
         rotary_embedding_dim_,
         rotary_position_interpolation_factor,

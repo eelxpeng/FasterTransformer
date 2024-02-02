@@ -159,6 +159,7 @@ std::unique_ptr<AbstractTransformerModelInstance> LlamaTritonModel<T>::createMod
                                                                true);  // causal_mask
     auto              gpt            = std::make_unique<ft::Llama<T>>(
         ft::Llama<T>(head_num_,
+                     head_num_,
                      size_per_head_,
                      inter_size_,
                      num_layer_,
@@ -205,7 +206,9 @@ void LlamaTritonModel<T>::createSharedWeights(int device_id, int rank)
     ft::check_cuda_error(cudaSetDevice(device_id));
     const int tensor_para_rank   = rank % tensor_para_size_;
     const int pipeline_para_rank = rank / tensor_para_size_;
-    shared_weights_[device_id]   = std::make_shared<ft::LlamaWeight<T>>(head_num_ * size_per_head_,
+    shared_weights_[device_id]   = std::make_shared<ft::LlamaWeight<T>>(head_num_,
+                                                                        head_num_,
+                                                                        size_per_head_,
                                                                         inter_size_,
                                                                         vocab_size_,
                                                                         num_layer_,

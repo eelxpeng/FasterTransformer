@@ -21,6 +21,7 @@ namespace ft = fastertransformer;
 namespace torch_ext {
 
 LlamaOp::LlamaOp(const int64_t                head_num,
+                     const int64_t            kv_head_num,
                      const int64_t            size_per_head,
                      const int64_t            inter_size,
                      const int64_t            layer_num,
@@ -41,6 +42,7 @@ LlamaOp::LlamaOp(const int64_t                head_num,
         case at::ScalarType::Float:
             FT_LOG_DEBUG("Init LlamaOp using fp32");
             ftllama = new FTLlama<float>((size_t)head_num,
+                                         (size_t)kv_head_num,
                                          (size_t)size_per_head,
                                          (size_t)inter_size,
                                          (size_t)layer_num,
@@ -58,6 +60,7 @@ LlamaOp::LlamaOp(const int64_t                head_num,
         case at::ScalarType::Half:
             FT_LOG_DEBUG("Init LlamaOp using fp16");
             ftllama = new FTLlama<half>((size_t)head_num,
+                                        (size_t)kv_head_num,
                                         (size_t)size_per_head,
                                         (size_t)inter_size,
                                         (size_t)layer_num,
@@ -76,6 +79,7 @@ LlamaOp::LlamaOp(const int64_t                head_num,
         case at::ScalarType::BFloat16:
             FT_LOG_DEBUG("Init LlamaOp using bf16");
             ftllama = new FTLlama<__nv_bfloat16>((size_t)head_num,
+                                        (size_t)kv_head_num,
                                         (size_t)size_per_head,
                                         (size_t)inter_size,
                                         (size_t)layer_num,
@@ -184,6 +188,7 @@ static auto fasterTransformerLlamaTHS =
     torch::jit::class_<torch_ext::LlamaOp>("FasterTransformer", "LlamaOp")
 #endif
         .def(torch::jit::init<int64_t,
+                              int64_t,
                               int64_t,
                               int64_t,
                               int64_t,

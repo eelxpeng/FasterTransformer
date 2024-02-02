@@ -138,15 +138,15 @@ void GptContextAttentionLayer<T>::forward(TensorMap*                output_tenso
     else {
         cublas_wrapper_->Gemm(CUBLAS_OP_N,
                               CUBLAS_OP_N,
-                              3 * local_hidden_units_,  // n
+                              (local_head_num_ + local_kv_head_num_ * 2 )*size_per_head_,  // n
                               m,
                               hidden_units_,  // k
                               attention_weights->query_weight.kernel,
-                              3 * local_hidden_units_,  // n
+                              (local_head_num_ + local_kv_head_num_ * 2)*size_per_head_,  // n
                               attention_input,
                               hidden_units_,  // k
                               qkv_buf_,
-                              3 * local_hidden_units_ /* n */);
+                              (local_head_num_ + local_kv_head_num_ * 2)*size_per_head_ /* n */);
     }
 
     sync_check_cuda_error();
@@ -160,11 +160,13 @@ void GptContextAttentionLayer<T>::forward(TensorMap*                output_tenso
     if (padding_offset != nullptr) {
         // q_buf_2_, k_buf_2_ and v_buf_2_ are continuous
         cudaMemsetAsync(
-            q_buf_2_, 0, request_batch_size * request_seq_len * 3 * local_hidden_units_ * sizeof(T), stream_);
+            q_buf_2_, 0, request_batch_size * request_seq_len * (local_head_num_ + local_kv_head_num_ * 2 ) * size_per_head_ * sizeof(T), stream_);
     }
     invokeAddFusedQKVBiasTranspose(q_buf_2_,
                                    k_buf_2_,
                                    v_buf_2_,
+                                   k_buf_2_repeat_,
+                                   v_buf_2_repeat_,
                                    param,  // prefix prompt
                                    qkv_buf_,
                                    attention_weights->query_weight.bias,
@@ -173,6 +175,7 @@ void GptContextAttentionLayer<T>::forward(TensorMap*                output_tenso
                                    request_seq_len,
                                    m,
                                    local_head_num_,
+                                   local_kv_head_num_,
                                    size_per_head_,
                                    rotary_embedding_dim_,
                                    rotary_position_interpolation_factor,
@@ -194,13 +197,14 @@ void GptContextAttentionLayer<T>::forward(TensorMap*                output_tenso
                                 max_prompt_length + request_seq_len,  // max input length + prefix prompt length
                                 max_seq_len,
                                 size_per_head_,
-                                local_head_num_,
+                                local_kv_head_num_,
                                 stream_);
     // IDEA : after this, k_cache = (batch_size, num_heads, Dh/x, prefix_prompt_len + L, x)
     // k_cache = (batch_size, num_heads, prefix_prompt_len + L, Dh)
     sync_check_cuda_error();
 
     // TODO: fmha kernels doesn't support different seq lengths of q and kv
+    // Fuse attention doesn't support MQA
     if (attention_type == AttentionType::FUSED_MHA) {
         dispatcher_fp16->setup_causal_masked_fmha(request_seq_len, request_batch_size);
         dispatcher_fp16->run_causal_masked_fmha(qkv_buf_, cu_seqlens, qkv_buf_3_, true, stream_);
@@ -225,7 +229,7 @@ void GptContextAttentionLayer<T>::forward(TensorMap*                output_tenso
                     attention_seq_len_1,                                 // m
                     size_per_head_,                                      // k
                     has_relative_attention_bias ? 1.0f / (sqrtf((float)size_per_head_) * q_scaling_) : 1.0,  // alpha, q_scaling apply here!
-                    k_buf_2_,
+                    k_buf_2_repeat_,
                     gemm_data_type,
                     size_per_head_,                        // k
                     attention_seq_len_2 * size_per_head_,  // n * k
@@ -310,7 +314,7 @@ void GptContextAttentionLayer<T>::forward(TensorMap*                output_tenso
                                                 size_per_head_,
                                                 attention_seq_len_1,
                                                 attention_seq_len_2,
-                                                v_buf_2_,
+                                                v_buf_2_repeat_,
                                                 size_per_head_,
                                                 attention_seq_len_2 * size_per_head_,
                                                 qk_buf_,
@@ -428,6 +432,7 @@ template<typename T>
 GptContextAttentionLayer<T>::GptContextAttentionLayer(size_t           max_batch_size,
                                                       size_t           max_seq_len,
                                                       size_t           head_num,
+                                                      size_t           kv_head_num,
                                                       size_t           size_per_head,
                                                       cudaStream_t     stream,
                                                       cublasMMWrapper* cublas_wrapper,
@@ -441,9 +446,11 @@ GptContextAttentionLayer<T>::GptContextAttentionLayer(size_t           max_batch
     max_batch_size_(max_batch_size),
     max_seq_len_(max_seq_len),
     head_num_(head_num),
+    kv_head_num_(kv_head_num),
     size_per_head_(size_per_head),
     hidden_units_(head_num * size_per_head),
     local_head_num_(head_num),
+    local_kv_head_num_(kv_head_num),
     local_hidden_units_(local_head_num_ * size_per_head),
     rotary_embedding_dim_(0),
     neox_rotary_style_(false),
@@ -459,8 +466,10 @@ template<typename T>
 GptContextAttentionLayer<T>::GptContextAttentionLayer(size_t           max_batch_size,
                                                       size_t           max_seq_len,
                                                       size_t           head_num,
+                                                      size_t           kv_head_num,
                                                       size_t           size_per_head,
                                                       size_t           local_head_num,
+                                                      size_t           local_kv_head_num,
                                                       cudaStream_t     stream,
                                                       cublasMMWrapper* cublas_wrapper,
                                                       IAllocator*      allocator,
@@ -473,9 +482,11 @@ GptContextAttentionLayer<T>::GptContextAttentionLayer(size_t           max_batch
     max_batch_size_(max_batch_size),
     max_seq_len_(max_seq_len),
     head_num_(head_num),
+    kv_head_num_(kv_head_num),
     size_per_head_(size_per_head),
     hidden_units_(head_num * size_per_head),
     local_head_num_(local_head_num),
+    local_kv_head_num_(local_kv_head_num),
     local_hidden_units_(local_head_num_ * size_per_head),
     rotary_embedding_dim_(0),
     neox_rotary_style_(false),
@@ -493,8 +504,10 @@ template<typename T>
 GptContextAttentionLayer<T>::GptContextAttentionLayer(size_t           max_batch_size,
                                                       size_t           max_seq_len,
                                                       size_t           head_num,
+                                                      size_t           kv_head_num,
                                                       size_t           size_per_head,
                                                       size_t           local_head_num,
+                                                      size_t           local_kv_head_num,
                                                       size_t           rotary_embedding_dim,
                                                       bool             neox_rotary_style,
                                                       cudaStream_t     stream,
@@ -509,9 +522,11 @@ GptContextAttentionLayer<T>::GptContextAttentionLayer(size_t           max_batch
     max_batch_size_(max_batch_size),
     max_seq_len_(max_seq_len),
     head_num_(head_num),
+    kv_head_num_(kv_head_num),
     size_per_head_(size_per_head),
     hidden_units_(head_num * size_per_head),
     local_head_num_(local_head_num),
+    local_kv_head_num_(local_kv_head_num),
     local_hidden_units_(local_head_num_ * size_per_head),
     rotary_embedding_dim_(rotary_embedding_dim),
     neox_rotary_style_(neox_rotary_style),
@@ -535,9 +550,11 @@ GptContextAttentionLayer<T>::GptContextAttentionLayer(GptContextAttentionLayer<T
     max_batch_size_(attention_layer.max_batch_size_),
     max_seq_len_(attention_layer.max_seq_len_),
     head_num_(attention_layer.head_num_),
+    kv_head_num_(attention_layer.kv_head_num_),
     size_per_head_(attention_layer.size_per_head_),
     hidden_units_(attention_layer.hidden_units_),
     local_head_num_(attention_layer.local_head_num_),
+    local_kv_head_num_(attention_layer.local_kv_head_num_),
     local_hidden_units_(attention_layer.local_hidden_units_),
     rotary_embedding_dim_(attention_layer.rotary_embedding_dim_),
     neox_rotary_style_(attention_layer.neox_rotary_style_),
@@ -569,10 +586,13 @@ void GptContextAttentionLayer<T>::allocateBuffer(size_t batch_size, size_t seq_l
     // const auto type_size = int8_mode_ == 2 ? sizeof(int8_t) : sizeof(T);
     // NOTE (perkzz): use sizeof(T) here for cutlass int8 kernels.
     const auto type_size = sizeof(T);
-    qkv_buf_ = (T*)allocator_->reMalloc(qkv_buf_, type_size * 3 * batch_size * seq_len * local_hidden_units_, true);
-    q_buf_2_ = (T*)allocator_->reMalloc(q_buf_2_, sizeof(T) * batch_size * seq_len * 3 * local_hidden_units_, true);
-    k_buf_2_ = q_buf_2_ + batch_size * seq_len * local_hidden_units_;
-    v_buf_2_ = k_buf_2_ + batch_size * seq_len * local_hidden_units_;
+    qkv_buf_ = (T*)allocator_->reMalloc(qkv_buf_, type_size * batch_size * seq_len * (local_head_num_ + local_kv_head_num_ * 2) * size_per_head_, true);
+    q_buf_2_ = (T*)allocator_->reMalloc(q_buf_2_, sizeof(T) * batch_size * seq_len * (local_head_num_ + local_kv_head_num_ * 2) * size_per_head_, true);
+    k_buf_2_ = q_buf_2_ + batch_size * seq_len * local_head_num_ * size_per_head_;
+    v_buf_2_ = k_buf_2_ + batch_size * seq_len * local_kv_head_num_ * size_per_head_;
+    
+    k_buf_2_repeat_ = (T*)allocator_->reMalloc(k_buf_2_repeat_, sizeof(T) * batch_size * seq_len * (local_head_num_ * 2) * size_per_head_,  true);
+    v_buf_2_repeat_ = k_buf_2_repeat_ +  batch_size * seq_len * local_head_num_ * size_per_head_;
 
     // save memory usage when using fmha
     if (allocate_qk_buf) {
@@ -581,8 +601,8 @@ void GptContextAttentionLayer<T>::allocateBuffer(size_t batch_size, size_t seq_l
     else {
         allocator_->free((void**)(&qk_buf_));
     }
-    qkv_buf_2_ = (T*)allocator_->reMalloc(qkv_buf_2_, sizeof(T) * batch_size * seq_len * local_hidden_units_, true);
-    qkv_buf_3_ = (T*)allocator_->reMalloc(qkv_buf_3_, type_size * batch_size * seq_len * local_hidden_units_, true);
+    qkv_buf_2_ = (T*)allocator_->reMalloc(qkv_buf_2_, sizeof(T) * batch_size * seq_len * local_head_num_ * size_per_head_, true);
+    qkv_buf_3_ = (T*)allocator_->reMalloc(qkv_buf_3_, type_size * batch_size * seq_len * local_head_num_ * size_per_head_, true);
 
     if (is_qk_buf_float_ == true) {
         if (allocate_qk_buf) {
@@ -627,7 +647,8 @@ void GptContextAttentionLayer<T>::freeBuffer()
         allocator_->free((void**)(&qk_buf_));
         allocator_->free((void**)(&qkv_buf_2_));
         allocator_->free((void**)(&qkv_buf_3_));
-
+        allocator_->free((void**)(&k_buf_2_repeat_));
+        
         if (is_qk_buf_float_ == true) {
             allocator_->free((void**)(&qk_buf_float_));
         }

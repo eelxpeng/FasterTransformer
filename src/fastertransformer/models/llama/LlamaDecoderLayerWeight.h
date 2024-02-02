@@ -29,7 +29,9 @@ template<typename T>
 struct LlamaDecoderLayerWeight {
 public:
     LlamaDecoderLayerWeight() = default;
-    LlamaDecoderLayerWeight(const int  hidden_units,
+    LlamaDecoderLayerWeight(size_t    head_num,
+                            size_t    kv_head_num,
+                            size_t    size_per_head,
                             const int  inter_size,
                             const int  tensor_para_size  = 1,
                             const int  tensor_para_rank  = 0,
@@ -46,6 +48,9 @@ public:
     FfnWeight<T>       ffn_weights;
 
 private:
+    size_t    head_num_;
+    size_t    kv_head_num_;
+    size_t    size_per_head_;
     int       hidden_units_;
     int       inter_size_;
     int       tensor_para_size_;

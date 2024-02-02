@@ -53,6 +53,7 @@ template<typename T>
 class FTLlama: public IFLlama {
 public:
     FTLlama(const size_t             head_num,
+            const size_t             kv_head_num,
             const size_t             size_per_head,
             const size_t             inter_size,
             const size_t             layer_num,
@@ -67,6 +68,7 @@ public:
             const size_t             max_seq_len,
             const bool               use_gptj_residual):
         head_num_(head_num),
+        kv_head_num_(kv_head_num),
         size_per_head_(size_per_head),
         inter_size_(inter_size),
         layer_num_(layer_num),
@@ -149,6 +151,7 @@ public:
                                                                    true);  // causal_mask
 
         ft::Llama<T> llama = ft::Llama<T>(head_num_,
+                                          kv_head_num_,
                                           size_per_head_,
                                           inter_size_,
                                           layer_num_,
@@ -308,6 +311,7 @@ public:
 
 private:
     const size_t head_num_;
+    const size_t kv_head_num_;
     const size_t size_per_head_;
     const size_t inter_size_;
     const size_t layer_num_;
@@ -340,6 +344,7 @@ private:
 class LlamaOp: public th::jit::CustomClassHolder {
 public:
     LlamaOp(const int64_t            head_num,
+            const int64_t            kv_head_num,
             const int64_t            size_per_head,
             const int64_t            inter_size,
             const int64_t            layer_num,

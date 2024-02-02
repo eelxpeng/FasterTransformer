@@ -28,7 +28,9 @@ struct LlamaWeight {
 
     LlamaWeight() = default;
     LlamaWeight(
-        const int                                  hidden_units,
+        size_t                                     head_num,
+        size_t                                     kv_head_num,
+        size_t                                     size_per_head,
         const int                                  inter_size,
         const int                                  vocab_size,
         const int                                  num_layer,

@@ -28,6 +28,7 @@ template<typename T>
 void Llama<T>::initialize()
 {
     gpt_context_decoder_ = new LlamaContextDecoder<T>(head_num_,
+                                                      kv_head_num_,
                                                       size_per_head_,
                                                       inter_size_,
                                                       num_layer_,
@@ -47,6 +48,7 @@ void Llama<T>::initialize()
                                                       enable_custom_all_reduce_);
 
     gpt_decoder_ = new LlamaDecoder<T>(head_num_,
+                                       kv_head_num_,
                                        size_per_head_,
                                        inter_size_,
                                        num_layer_,
@@ -101,7 +103,7 @@ void Llama<T>::allocateBuffer(
     FT_LOG_DEBUG(__PRETTY_FUNCTION__);
     const size_t batchxbeam      = batch_size * beam_width;
     const size_t self_cache_size = (num_layer_ / pipeline_para_.world_size_) * batchxbeam * max_cache_seq_len
-                                   * hidden_units_ / tensor_para_.world_size_;
+                                   * (head_num_ + 2* kv_head_num_) * size_per_head_ / tensor_para_.world_size_;
 
     if (vocab_size_ != vocab_size_padded_) {
         padded_embedding_kernel_ =
@@ -223,6 +225,7 @@ void Llama<T>::freeBuffer()
 
 template<typename T>
 Llama<T>::Llama(size_t                              head_num,
+                size_t                              kv_head_num,
                 size_t                              size_per_head,
                 size_t                              inter_size,
                 size_t                              num_layer,
@@ -252,6 +255,7 @@ Llama<T>::Llama(size_t                              head_num,
                 int                                 enable_custom_all_reduce):
     BaseLayer(stream, cublas_wrapper, allocator, is_free_buffer_after_forward, cuda_device_prop),
     head_num_(head_num),
+    kv_head_num_(kv_head_num),
     size_per_head_(size_per_head),
     inter_size_(inter_size),
     num_layer_(num_layer),
@@ -265,7 +269,7 @@ Llama<T>::Llama(size_t                              head_num,
     prompt_learning_type_(prompt_learning_type),
     use_gptj_residual_(use_gptj_residual),
     hidden_units_(head_num * size_per_head),
-    local_head_num_(head_num / 1),
+    local_kv_head_num_(kv_head_num / 1),
     attention_type_(attention_type)
 {
     tensor_para_.world_size_   = 1;
@@ -287,6 +291,7 @@ Llama<T>::Llama(size_t                              head_num,
 
 template<typename T>
 Llama<T>::Llama(size_t                              head_num,
+                size_t                              kv_head_num,
                 size_t                              size_per_head,
                 size_t                              inter_size,
                 size_t                              num_layer,
@@ -318,6 +323,7 @@ Llama<T>::Llama(size_t                              head_num,
                 int                                 enable_custom_all_reduce):
     BaseLayer(stream, cublas_wrapper, allocator, is_free_buffer_after_forward, cuda_device_prop),
     head_num_(head_num),
+    kv_head_num_(kv_head_num),
     size_per_head_(size_per_head),
     inter_size_(inter_size),
     num_layer_(num_layer),
@@ -333,7 +339,7 @@ Llama<T>::Llama(size_t                              head_num,
     hidden_units_(head_num * size_per_head),
     tensor_para_(tensor_para),
     pipeline_para_(pipeline_para),
-    local_head_num_(head_num / tensor_para.world_size_),
+    local_kv_head_num_(kv_head_num / tensor_para.world_size_),
     custom_all_reduce_comm_(custom_all_reduce_comm),
     enable_custom_all_reduce_(enable_custom_all_reduce),
     attention_type_(attention_type)
@@ -350,6 +356,7 @@ template<typename T>
 Llama<T>::Llama(Llama<T> const& gpt):
     BaseLayer(gpt),
     head_num_(gpt.head_num_),
+    kv_head_num_(gpt.kv_head_num_),
     size_per_head_(gpt.size_per_head_),
     inter_size_(gpt.inter_size_),
     num_layer_(gpt.num_layer_),
@@ -365,7 +372,7 @@ Llama<T>::Llama(Llama<T> const& gpt):
     hidden_units_(gpt.hidden_units_),
     tensor_para_(gpt.tensor_para_),
     pipeline_para_(gpt.pipeline_para_),
-    local_head_num_(gpt.local_head_num_),
+    local_kv_head_num_(gpt.local_kv_head_num_),
     vocab_size_padded_(gpt.vocab_size_padded_),
     custom_all_reduce_comm_(gpt.custom_all_reduce_comm_),
     enable_custom_all_reduce_(gpt.enable_custom_all_reduce_),
@@ -581,13 +588,13 @@ void Llama<T>::forward(std::unordered_map<std::string, Tensor>*       output_ten
 
     const std::vector<size_t> self_k_cache_shape = {num_layer_ / pipeline_para_.world_size_,
                                                     batch_size * beam_width,
-                                                    local_head_num_,
+                                                    local_kv_head_num_,
                                                     size_per_head_ / (16 / sizeof(T)),
                                                     max_cache_seq_len,
                                                     16 / sizeof(T)};
     const std::vector<size_t> self_v_cache_shape = {num_layer_ / pipeline_para_.world_size_,
                                                     batch_size * beam_width,
-                                                    local_head_num_,
+                                                    local_kv_head_num_,
                                                     max_cache_seq_len,
                                                     size_per_head_};
 

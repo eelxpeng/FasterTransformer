@@ -1520,6 +1520,8 @@ template<typename T, bool PREFIX_PROMPT>
 __global__ void add_fusedQKV_bias_transpose_kernel(T*                               q_buf,
                                                    T*                               k_buf,
                                                    T*                               v_buf,
+                                                   T*                               k_repeat_buf,
+                                                   T*                               v_repeat_buf,
                                                    PrefixPromptBatchWeightsParam<T> param,
                                                    T*                               QKV,
                                                    const T* __restrict qkv_bias,
@@ -1527,6 +1529,7 @@ __global__ void add_fusedQKV_bias_transpose_kernel(T*                           
                                                    const int  batch_size,
                                                    const int  seq_len,
                                                    const int  head_num,
+                                                   const int  kv_head_num,
                                                    const int  size_per_head,
                                                    const int  rotary_embedding_dim,
                                                    const float rotary_position_interpolation_factor,
@@ -1588,7 +1591,8 @@ __global__ void add_fusedQKV_bias_transpose_kernel(T*                           
 
     const int prefix_prompt_length = PREFIX_PROMPT ? param.d_prefix_prompt_lengths[batch_idx] : 0;
     const int hidden_idx           = head_idx * size_per_head + tidx * vec_size;
-    const int n                    = head_num * size_per_head;
+    const int hidden_kv_idx        = (head_idx/ (head_num/kv_head_num)) * size_per_head + tidx * vec_size; 
+    // const int n                    = head_num * size_per_head;
 
     // the [0..seq_len) indices really handle KV [max_pp_len..seq_len+max_pp_len)
     // and Q [0..seq_len)
@@ -1597,28 +1601,41 @@ __global__ void add_fusedQKV_bias_transpose_kernel(T*                           
 
     // NOTE: q has seq len excluding prefix prompt
     // src QKV: [batch, time, 3, head, hidden]
-    const int src_q_idx = token_idx * 3 * n + hidden_idx;
-    const int src_k_idx = token_idx * 3 * n + hidden_idx + n;
-    const int src_v_idx = token_idx * 3 * n + hidden_idx + 2 * n;
+    // const int src_q_idx = token_idx * 3 * n + hidden_idx;
+    // const int src_k_idx = token_idx * 3 * n + hidden_idx + n;
+    // const int src_v_idx = token_idx * 3 * n + hidden_idx + 2 * n;
+    const int q_kv_head_num = head_num + 2 * kv_head_num;
+    const int k_offset = head_num * size_per_head;
+    const int v_offset = k_offset + kv_head_num * size_per_head;
 
+    // src QKV: [batch, time, q_kv_head_num, hidden]
+    const int src_q_idx = token_idx * q_kv_head_num * size_per_head + hidden_idx;
+    const int src_k_idx = token_idx * q_kv_head_num * size_per_head + hidden_kv_idx + k_offset;
+    const int src_v_idx = token_idx * q_kv_head_num * size_per_head + hidden_kv_idx + v_offset;
     Vec_t q, k, v;
     Vec_t q_bias, k_bias, v_bias;
+
+    // load Q and apply bias
     if (!is_masked) {
         q = *reinterpret_cast<const Vec_t*>(&QKV[src_q_idx]);
-        k = *reinterpret_cast<const Vec_t*>(&QKV[src_k_idx]);
-        v = *reinterpret_cast<const Vec_t*>(&QKV[src_v_idx]);
-
+       
         if (qkv_bias != nullptr) {
             q_bias = *reinterpret_cast<const Vec_t*>(&qkv_bias[hidden_idx]);
-            k_bias = *reinterpret_cast<const Vec_t*>(&qkv_bias[hidden_idx + n]);
-            v_bias = *reinterpret_cast<const Vec_t*>(&qkv_bias[hidden_idx + 2 * n]);
+            q      = mmha::add(q, q_bias);
         }
-    }
 
-    if (qkv_bias != nullptr) {
-        q = mmha::add(q, q_bias);
-        k = mmha::add(k, k_bias);
-        v = mmha::add(v, v_bias);
+
+    }
+    // load KV and apply bias
+    if (!is_masked) {
+        k = *reinterpret_cast<const Vec_t*>(&QKV[src_k_idx]);
+        v = *reinterpret_cast<const Vec_t*>(&QKV[src_v_idx]);
+        if (qkv_bias) {
+            k_bias = *reinterpret_cast<const Vec_t*>(&qkv_bias[hidden_kv_idx + k_offset]);
+            v_bias = *reinterpret_cast<const Vec_t*>(&qkv_bias[hidden_kv_idx + v_offset]);
+            k      = mmha::add(k, k_bias);
+            v      = mmha::add(v, v_bias);
+        }
     }
 
     const float rotary_position = dst_kv_seq_idx / rotary_position_interpolation_factor;
@@ -1662,23 +1679,33 @@ __global__ void add_fusedQKV_bias_transpose_kernel(T*                           
             k = *reinterpret_cast<Vec_t*>(k_smem + half_idx * smem_pitch + intra_half_idx);
         }
     }
-    if (!is_masked) {
+    if (!is_masked && !q_buf) {
         *reinterpret_cast<Vec_t*>(&QKV[src_q_idx]) = q;
-        *reinterpret_cast<Vec_t*>(&QKV[src_k_idx]) = k;
-        *reinterpret_cast<Vec_t*>(&QKV[src_v_idx]) = v;
+        if (head_idx % (head_num /kv_head_num) == 0) {
+            *reinterpret_cast<Vec_t*>(&QKV[src_k_idx]) = k;
+            *reinterpret_cast<Vec_t*>(&QKV[src_v_idx]) = v;
+        }
     }
 
     const int dest_q_idx = batch_idx * size_per_head * seq_len * head_num + head_idx * size_per_head * seq_len
                            + seq_idx * size_per_head + tidx * vec_size;
 
-    const int dest_kv_idx = batch_idx * size_per_head * total_seq_len * head_num
-                            + head_idx * size_per_head * total_seq_len + dst_kv_seq_idx * size_per_head
+    const int dest_kv_idx = batch_idx * size_per_head * total_seq_len * kv_head_num
+                            + head_idx/(head_num/kv_head_num) * size_per_head * total_seq_len + dst_kv_seq_idx * size_per_head
                             + tidx * vec_size;
+    const int dest_kv_repeat_idx = batch_idx * size_per_head * total_seq_len * head_num
+                        + head_idx * size_per_head * total_seq_len + dst_kv_seq_idx * size_per_head
+                        + tidx * vec_size;
 
     if (!is_masked) {
         *reinterpret_cast<Vec_t*>(&q_buf[dest_q_idx])  = q;
-        *reinterpret_cast<Vec_t*>(&k_buf[dest_kv_idx]) = k;
-        *reinterpret_cast<Vec_t*>(&v_buf[dest_kv_idx]) = v;
+        if (head_idx % (head_num/kv_head_num) ==0 ) {
+            *reinterpret_cast<Vec_t*>(&k_buf[dest_kv_idx]) = k;
+            *reinterpret_cast<Vec_t*>(&v_buf[dest_kv_idx]) = v;
+        }
+
+        *reinterpret_cast<Vec_t*>(&k_repeat_buf[dest_kv_repeat_idx]) = k;
+        *reinterpret_cast<Vec_t*>(&v_repeat_buf[dest_kv_repeat_idx]) = v;
     }
 }
 
@@ -1686,6 +1713,8 @@ __global__ void add_fusedQKV_bias_transpose_kernel(T*                           
     add_fusedQKV_bias_transpose_kernel<T, PREFIX_PROMPT><<<grid, block, smem_size, stream>>>(q_buf,                    \
                                                                                              k_buf,                    \
                                                                                              v_buf,                    \
+                                                                                             k_repeat_buf,                    \
+                                                                                             v_repeat_buf,                    \
                                                                                              param,                    \
                                                                                              QKV,                      \
                                                                                              qkv_bias,                 \
@@ -1693,6 +1722,7 @@ __global__ void add_fusedQKV_bias_transpose_kernel(T*                           
                                                                                              batch_size,               \
                                                                                              seq_len,                  \
                                                                                              head_num,                 \
+                                                                                             kv_head_num,              \
                                                                                              size_per_head,            \
                                                                                              rotary_embedding_dim,     \
                                                                                              rotary_position_interpolation_factor,    \
@@ -1702,6 +1732,8 @@ template<typename T>
 void invokeAddFusedQKVBiasTranspose(T*                               q_buf,
                                     T*                               k_buf,
                                     T*                               v_buf,
+                                    T*                               k_repeat_buf,
+                                    T*                               v_repeat_buf,
                                     PrefixPromptBatchWeightsParam<T> param,
                                     T*                               QKV,
                                     const T*                         qkv_bias,
@@ -1710,6 +1742,7 @@ void invokeAddFusedQKVBiasTranspose(T*                               q_buf,
                                     const int                        seq_len,
                                     const int                        token_num,
                                     const int                        head_num,
+                                    const int                        kv_head_num,
                                     const int                        size_per_head,
                                     const int                        rotary_embedding_dim,
                                     const float                      rotary_position_interpolation_factor,
@@ -1727,6 +1760,7 @@ void invokeAddFusedQKVBiasTranspose(T*                               q_buf,
         add_fusedQKV_bias_transpose_kernel<<<grid, block, 0, stream>>>(q_buf,
                                                                        k_buf,
                                                                        v_buf,
+                                                                      
                                                                        QKV,
                                                                        qkv_bias,
                                                                        padding_offset,
@@ -1760,6 +1794,8 @@ void invokeAddFusedQKVBiasTranspose(T*                               q_buf,
     template void invokeAddFusedQKVBiasTranspose(T*                               q_buf,                               \
                                                  T*                               k_buf,                               \
                                                  T*                               v_buf,                               \
+                                                  T*                              k_repeat_buf,                               \
+                                                 T*                               v_repeat_buf,                               \
                                                  PrefixPromptBatchWeightsParam<T> param,                               \
                                                  T*                               QKV,                                 \
                                                  const T*                         qkv_bias,                            \
@@ -1767,7 +1803,8 @@ void invokeAddFusedQKVBiasTranspose(T*                               q_buf,
                                                  const int                        batch_size,                          \
                                                  const int                        seq_len,                             \
                                                  const int                        token_num,                           \
-                                                 const int                        head_num,                            \
+                                                 const int                        head_num,                           \
+                                                 const int                        kv_head_num,                           \
                                                  const int                        size_per_head,                       \
                                                  const int                        rotary_embedding_dim,                \
                                                  const float                      rotary_position_interpolation_factor,               \

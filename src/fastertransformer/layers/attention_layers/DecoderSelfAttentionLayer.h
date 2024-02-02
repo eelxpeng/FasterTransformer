@@ -31,9 +31,11 @@ private:
 
     // metadata
     const size_t head_num_;
+    const size_t kv_head_num_;
     const size_t size_per_head_;
     const size_t hidden_units_;
     const size_t local_head_num_;
+    const size_t local_kv_head_num_;
     const size_t local_hidden_units_;
     const size_t d_model_;
     const float  q_scaling_;
@@ -71,8 +73,10 @@ protected:
 public:
     DecoderSelfAttentionLayer(size_t           max_batch_size,
                               size_t           head_num,
+                              size_t           kv_head_num,
                               size_t           size_per_head,
                               size_t           local_head_num,
+                              size_t           local_kv_head_num,
                               size_t           rotary_embedding_dim,
                               bool             neox_rotary_style,
                               size_t           d_model,
@@ -166,6 +170,7 @@ void fusedQKV_masked_attention_dispatch(const T*     qkv_buf,
                                         const int    inference_batch_size,
                                         const int    beam_width,
                                         const int    head_num,
+                                        const int    kv_head_num,
                                         const int    size_per_head,
                                         const int    rotary_embedding_dim,
                                         const bool   neox_rotary_style,

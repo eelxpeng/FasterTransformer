@@ -286,7 +286,10 @@ void llama_example(const INIReader reader, std::string start_ids_csv)
     }
 
     const bool                          use_gptj_residual = false;
-    fastertransformer::LlamaWeight<T> gpt_weights(hidden_units,
+    fastertransformer::LlamaWeight<T> gpt_weights(
+                                                  head_num,
+                                                  head_num,
+                                                  size_per_head,  
                                                   inter_size,
                                                   vocab_size,
                                                   decoder_layers,
@@ -323,6 +326,7 @@ void llama_example(const INIReader reader, std::string start_ids_csv)
                                                        true);  // causal_mask
 
     Llama<T> gpt = Llama<T>(head_num,
+                            head_num,
                             size_per_head,
                             inter_size,
                             decoder_layers,

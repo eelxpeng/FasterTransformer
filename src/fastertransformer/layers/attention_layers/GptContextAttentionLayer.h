@@ -33,9 +33,11 @@ private:
 
     // metadata
     const size_t head_num_;
+    const size_t kv_head_num_;
     const size_t size_per_head_;
     const size_t hidden_units_;
     const size_t local_head_num_;
+    const size_t local_kv_head_num_;
     const size_t local_hidden_units_;
     const size_t rotary_embedding_dim_;
     const bool   neox_rotary_style_;
@@ -70,6 +72,8 @@ protected:
     float* qk_buf_float_         = nullptr;
     T*     qkv_buf_2_            = nullptr;
     T*     qkv_buf_3_            = nullptr;
+    T*     k_buf_2_repeat_       = nullptr;
+    T*     v_buf_2_repeat_       = nullptr;
     char*  mixed_gemm_workspace_ = nullptr;
     size_t mixed_gemm_ws_bytes_  = 0;
     char*  int8_gemm_workspace_  = nullptr;
@@ -84,6 +88,7 @@ public:
     GptContextAttentionLayer(size_t           max_batch_size,
                              size_t           max_seq_len,
                              size_t           head_num,
+                             size_t           kv_head_num,
                              size_t           size_per_head,
                              cudaStream_t     stream,
                              cublasMMWrapper* cublas_wrapper,
@@ -97,8 +102,10 @@ public:
     GptContextAttentionLayer(size_t           max_batch_size,
                              size_t           max_seq_len,
                              size_t           head_num,
+                             size_t           kv_head_num,
                              size_t           size_per_head,
                              size_t           local_head_num,
+                             size_t           local_kv_head_num,
                              cudaStream_t     stream,
                              cublasMMWrapper* cublas_wrapper,
                              IAllocator*      allocator,
@@ -111,8 +118,10 @@ public:
     GptContextAttentionLayer(size_t           max_batch_size,
                              size_t           max_seq_len,
                              size_t           head_num,
+                             size_t           kv_head_num,
                              size_t           size_per_head,
                              size_t           local_head_num,
+                             size_t           local_kv_head_num,
                              size_t           rotary_embedding_dim,
                              bool             neox_rotary_style_,
                              cudaStream_t     stream,
