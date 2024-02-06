@@ -103,7 +103,7 @@ void Llama<T>::allocateBuffer(
     FT_LOG_DEBUG(__PRETTY_FUNCTION__);
     const size_t batchxbeam      = batch_size * beam_width;
     const size_t self_cache_size = (num_layer_ / pipeline_para_.world_size_) * batchxbeam * max_cache_seq_len
-                                   * (head_num_ + 2* kv_head_num_) * size_per_head_ / tensor_para_.world_size_;
+                                   * kv_head_num_ * size_per_head_ / tensor_para_.world_size_;
 
     if (vocab_size_ != vocab_size_padded_) {
         padded_embedding_kernel_ =
