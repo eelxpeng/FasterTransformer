@@ -229,6 +229,7 @@ Llama<T>::Llama(size_t                              head_num,
                 size_t                              vocab_size,
                 size_t                              rotary_embedding_dim,
                 float                               rotary_position_interpolation_factor,
+                float                               rotary_position_freq_base,
                 float                               layernorm_eps,
                 int                                 start_id,
                 int                                 end_id,
@@ -258,6 +259,7 @@ Llama<T>::Llama(size_t                              head_num,
     vocab_size_(vocab_size),
     rotary_embedding_dim_(rotary_embedding_dim),
     rotary_position_interpolation_factor_(rotary_position_interpolation_factor),
+    rotary_position_freq_base_(rotary_position_freq_base),
     layernorm_eps_(layernorm_eps),
     start_id_(start_id),
     end_id_(end_id),
@@ -279,6 +281,69 @@ Llama<T>::Llama(size_t                              head_num,
         || std::is_same<__nv_bfloat16, T>::value
 #endif
     ) {
+        local_vacab_size = ceil(local_vacab_size / 8.f) * 8;
+    }
+    vocab_size_padded_ = (size_t)local_vacab_size * tensor_para_.world_size_;
+    initialize();
+}
+
+template<typename T>
+Llama<T>::Llama(size_t                              head_num,
+                size_t                              size_per_head,
+                size_t                              inter_size,
+                size_t                              num_layer,
+                size_t                              vocab_size,
+                size_t                              rotary_embedding_dim,
+                float                               rotary_position_interpolation_factor,
+                float                               rotary_position_freq_base,
+                float                               layernorm_eps,
+                int                                 start_id,
+                int                                 end_id,
+                int                                 prompt_learning_start_id,  // only needed by p/prompt-tuning
+                PromptLearningType                  prompt_learning_type,
+                bool                                use_gptj_residual,
+                float                               beam_search_diversity_rate,
+                size_t                              top_k,
+                float                               top_p,
+                unsigned long long                  random_seed,
+                float                               temperature,
+                float                               len_penalty,
+                float                               repetition_penalty,
+                NcclParam                           tensor_para,
+                NcclParam                           pipeline_para,
+                cudaStream_t                        stream,
+                cublasMMWrapper*                    cublas_wrapper,
+                IAllocator*                         allocator,
+                bool                                is_free_buffer_after_forward,
+                cudaDeviceProp*                     cuda_device_prop,
+                AttentionType                       attention_type,
+                std::shared_ptr<AbstractCustomComm> custom_all_reduce_comm,
+                int                                 enable_custom_all_reduce):
+    BaseLayer(stream, cublas_wrapper, allocator, is_free_buffer_after_forward, cuda_device_prop),
+    head_num_(head_num),
+    size_per_head_(size_per_head),
+    inter_size_(inter_size),
+    num_layer_(num_layer),
+    vocab_size_(vocab_size),
+    rotary_embedding_dim_(rotary_embedding_dim),
+    rotary_position_interpolation_factor_(rotary_position_interpolation_factor),
+    rotary_position_freq_base_(rotary_position_freq_base),
+    layernorm_eps_(layernorm_eps),
+    start_id_(start_id),
+    end_id_(end_id),
+    prompt_learning_start_id_(prompt_learning_start_id),
+    prompt_learning_type_(prompt_learning_type),
+    use_gptj_residual_(use_gptj_residual),
+    hidden_units_(head_num * size_per_head),
+    tensor_para_(tensor_para),
+    pipeline_para_(pipeline_para),
+    local_head_num_(head_num / tensor_para.world_size_),
+    custom_all_reduce_comm_(custom_all_reduce_comm),
+    enable_custom_all_reduce_(enable_custom_all_reduce),
+    attention_type_(attention_type)
+{
+    int local_vacab_size = ceil(vocab_size_ / 1.f / tensor_para_.world_size_);
+    if (std::is_same<half, T>::value) {
         local_vacab_size = ceil(local_vacab_size / 8.f) * 8;
     }
     vocab_size_padded_ = (size_t)local_vacab_size * tensor_para_.world_size_;
@@ -316,34 +381,38 @@ Llama<T>::Llama(size_t                              head_num,
                 AttentionType                       attention_type,
                 std::shared_ptr<AbstractCustomComm> custom_all_reduce_comm,
                 int                                 enable_custom_all_reduce):
-    BaseLayer(stream, cublas_wrapper, allocator, is_free_buffer_after_forward, cuda_device_prop),
-    head_num_(head_num),
-    size_per_head_(size_per_head),
-    inter_size_(inter_size),
-    num_layer_(num_layer),
-    vocab_size_(vocab_size),
-    rotary_embedding_dim_(rotary_embedding_dim),
-    rotary_position_interpolation_factor_(rotary_position_interpolation_factor),
-    layernorm_eps_(layernorm_eps),
-    start_id_(start_id),
-    end_id_(end_id),
-    prompt_learning_start_id_(prompt_learning_start_id),
-    prompt_learning_type_(prompt_learning_type),
-    use_gptj_residual_(use_gptj_residual),
-    hidden_units_(head_num * size_per_head),
-    tensor_para_(tensor_para),
-    pipeline_para_(pipeline_para),
-    local_head_num_(head_num / tensor_para.world_size_),
-    custom_all_reduce_comm_(custom_all_reduce_comm),
-    enable_custom_all_reduce_(enable_custom_all_reduce),
-    attention_type_(attention_type)
-{
-    int local_vacab_size = ceil(vocab_size_ / 1.f / tensor_para_.world_size_);
-    if (std::is_same<half, T>::value) {
-        local_vacab_size = ceil(local_vacab_size / 8.f) * 8;
-    }
-    vocab_size_padded_ = (size_t)local_vacab_size * tensor_para_.world_size_;
-    initialize();
+    Llama<T>(head_num,
+             size_per_head,
+            inter_size,
+            num_layer,
+             vocab_size,
+             rotary_embedding_dim,
+             rotary_position_interpolation_factor,
+             10000.f,
+
+                              layernorm_eps,
+                                            start_id,
+                                                 end_id,
+                                            prompt_learning_start_id,  // only needed by p/prompt-tuning
+                                  prompt_learning_type,
+                                                use_gptj_residual,
+                                               beam_search_diversity_rate,
+                                              top_k,
+                                               top_p,
+                          random_seed,
+                                               temperature,
+                                               len_penalty,
+                                               repetition_penalty,
+                                           tensor_para,
+                                           pipeline_para,
+                                        stream,
+                                    cublas_wrapper,
+                                         allocator,
+                                                is_free_buffer_after_forward,
+                                     cuda_device_prop,
+                                       attention_type,
+                 custom_all_reduce_comm,
+                                                 enable_custom_all_reduce){        
 }
 
 template<typename T>
@@ -356,6 +425,7 @@ Llama<T>::Llama(Llama<T> const& gpt):
     vocab_size_(gpt.vocab_size_),
     rotary_embedding_dim_(gpt.rotary_embedding_dim_),
     rotary_position_interpolation_factor_(gpt.rotary_position_interpolation_factor_),
+    rotary_position_freq_base_(gpt.rotary_position_freq_base_),
     layernorm_eps_(gpt.layernorm_eps_),
     start_id_(gpt.start_id_),
     end_id_(gpt.end_id_),
@@ -569,6 +639,11 @@ void Llama<T>::forward(std::unordered_map<std::string, Tensor>*       output_ten
             ? input_tensors->at("rotary_position_interpolation_factor").getVal<float>()
             : rotary_position_interpolation_factor_;
 
+    const float rotary_position_freq_base = \
+        input_tensors->find("rotary_position_freq_base") != input_tensors->end()
+            ? input_tensors->at("rotary_position_freq_base").getVal<float>()
+            : rotary_position_freq_base_;
+
     sync_check_cuda_error();
     {
         TensorMap input_map(*input_tensors);
@@ -704,7 +779,12 @@ void Llama<T>::forward(std::unordered_map<std::string, Tensor>*       output_ten
                     Tensor{MEMORY_CPU,
                            TYPE_FP32,
                            {1},
-                           &rotary_position_interpolation_factor}}
+                           &rotary_position_interpolation_factor}},
+            {"rotary_position_freq_base",
+                    Tensor{MEMORY_CPU,
+                           TYPE_FP32,
+                           {1},
+                           &rotary_position_freq_base}}               
                     };
 
         std::unordered_map<std::string, Tensor> decoder_output_tensors{
@@ -894,7 +974,12 @@ void Llama<T>::forward(std::unordered_map<std::string, Tensor>*       output_ten
                      Tensor{MEMORY_CPU,
                             TYPE_FP32,
                             {1},
-                            &rotary_position_interpolation_factor}}};
+                            &rotary_position_interpolation_factor}},
+                    {"rotary_position_freq_base",
+                     Tensor{MEMORY_CPU,
+                            TYPE_FP32,
+                            {1},
+                            &rotary_position_freq_base}}};
                 std::unordered_map<std::string, Tensor> decoder_output_tensors{
                     {"decoder_output",
                      Tensor{MEMORY_GPU,

@@ -90,6 +90,8 @@ struct Multihead_attention_params_base {
     int  rotary_embedding_dim = 0;
     // The scaling factor to apply to rotary embedding for longer-than-seen sequence lengths
     float rotary_position_interpolation_factor = 1.;
+
+    float rotary_position_freq_base = 10000.;
     bool neox_rotary_style    = false;
     // The maximum length of input sentences.
     int max_input_length = 0;

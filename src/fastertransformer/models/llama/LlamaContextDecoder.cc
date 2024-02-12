@@ -227,7 +227,8 @@ void LlamaContextDecoder<T>::forward(std::unordered_map<std::string, Tensor>*   
     //      d_prefix_prompt_batch [batch_size],
     //          each element contains ptr with buffer shape[2, local_head_num_, prompt_length, size_per_head]
     //      prefix_prompt_lengths [batch size]
-    //      rotary_position_interpolation_factor [1] on cpu (optional)
+    //      rotary_position_interpolation_factor [1] on cpu
+    //      rotary_position_freq_base [1] on cpu 
 
     // output tensors:
     //      decoder_output [batch_size, seq_len, hidden_dimension],
@@ -239,7 +240,7 @@ void LlamaContextDecoder<T>::forward(std::unordered_map<std::string, Tensor>*   
     // For example, the shape of decoder_input becomes [ite, batch_size, seq_len, hidden_dimension] during
     // computing.
 
-    FT_CHECK(input_tensors->size() == 6);
+    FT_CHECK(input_tensors->size() == 7);
     FT_CHECK(output_tensors->size() == 4);
 
     const int batch_size = input_tensors->at("decoder_input").shape[0];
@@ -351,7 +352,8 @@ void LlamaContextDecoder<T>::forward(std::unordered_map<std::string, Tensor>*   
                 {"attention_type", Tensor{MEMORY_CPU, TYPE_VOID, {1}, &attention_type}},
                 {"is_final_layer", Tensor{MEMORY_CPU, TYPE_BOOL, {(size_t)1}, &is_final}},
                 {"layer_id", Tensor{MEMORY_CPU, TYPE_INT32, {(size_t)1}, &l}},
-                {"rotary_position_interpolation_factor", input_tensors->at("rotary_position_interpolation_factor")}};
+                {"rotary_position_interpolation_factor", input_tensors->at("rotary_position_interpolation_factor")},
+                {"rotary_position_freq_base", input_tensors->at("rotary_position_freq_base")}};
             self_attention_input_tensors.insertIfValid(
                 "d_prefix_prompt_batch",
                 Tensor{MEMORY_GPU,

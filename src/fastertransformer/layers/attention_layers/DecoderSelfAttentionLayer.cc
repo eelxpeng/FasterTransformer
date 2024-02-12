@@ -51,6 +51,7 @@ void fusedQKV_masked_attention_dispatch(const T*     qkv_buf,
                                         const int    size_per_head,
                                         const int    rotary_embedding_dim,
                                         const float  rotary_position_interpolation_factor,
+                                        const float  rotary_position_freq_base,
                                         const bool   neox_rotary_style,
                                         const int    memory_max_len,
                                         const int*   prefix_prompt_lengths,
@@ -117,6 +118,7 @@ void fusedQKV_masked_attention_dispatch(const T*     qkv_buf,
     params.hidden_size_per_head = size_per_head;
     params.rotary_embedding_dim = rotary_embedding_dim;
     params.rotary_position_interpolation_factor = rotary_position_interpolation_factor;
+    params.rotary_position_freq_base = rotary_position_freq_base;
     params.neox_rotary_style    = neox_rotary_style;
     // Note: keep norm factor (sqrt(K_dim)) when adopting megatron T5 structure (may adjust)
     params.inv_sqrt_dh = 1.F / (sqrtf((float)params.hidden_size_per_head) * q_scaling);
@@ -169,7 +171,8 @@ void fusedQKV_masked_attention_dispatch(const T*     qkv_buf,
                                                      const int    head_num,                                            \
                                                      const int    size_per_head,                                       \
                                                      const int    rotary_embedding_dim,                                \
-                                                     const float  rotary_position_interpolation_factor,                               \
+                                                     const float  rotary_position_interpolation_factor,                \
+                                                     const float  rotary_position_freq_base,                           \
                                                      const bool   neox_rotary_style,                                   \
                                                      const int    memory_max_len,                                      \
                                                      const int*   prefix_prompt_lengths,                               \
@@ -510,6 +513,8 @@ void DecoderSelfAttentionLayer<T>::forward(TensorMap*                output_tens
     const T*   linear_bias_slopes = input_tensors->getPtr<T>("linear_bias_slopes", nullptr);
     const bool has_ia3            = input_tensors->isExist("ia3_tasks");
     const auto rotary_position_interpolation_factor  = input_tensors->getVal<float>("rotary_position_interpolation_factor", 1.);
+    const auto rotary_position_freq_base  = input_tensors->getVal<float>("rotary_position_freq_base", 10000.);
+
 
     T* attention_out = output_tensors->getPtr<T>("hidden_features");
     T* key_cache     = output_tensors->getPtr<T>("key_cache");
@@ -611,6 +616,7 @@ void DecoderSelfAttentionLayer<T>::forward(TensorMap*                output_tens
         size_per_head_,
         rotary_embedding_dim_,
         rotary_position_interpolation_factor,
+        rotary_position_freq_base,
         neox_rotary_style_,
         memory_max_len,
         d_prefix_prompt_lengths,

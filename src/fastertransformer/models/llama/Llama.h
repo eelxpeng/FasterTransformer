@@ -39,6 +39,7 @@ private:
     size_t vocab_size_;
     size_t rotary_embedding_dim_;
     float  rotary_position_interpolation_factor_;
+    float  rotary_position_freq_base_;
     float layernorm_eps_;
 
     static constexpr bool  neox_rotary_style_ = true;
@@ -148,6 +149,7 @@ public:
           size_t                              vocab_size,
           size_t                              rotary_embedding_dim,
           float                               rotary_position_interpolation_factor,
+          float                               rotary_position_freq_base,
           float                               layernorm_eps,
           int                                 start_id,
           int                                 end_id,
@@ -171,6 +173,38 @@ public:
           int                                 enable_custom_all_reduce = 0);
 
     Llama(size_t                              head_num,
+          size_t                              size_per_head,
+          size_t                              inter_size,
+          size_t                              num_layer,
+          size_t                              vocab_size,
+          size_t                              rotary_embedding_dim,
+          float                               rotary_position_interpolation_factor,
+          float                               rotary_position_freq_base,
+          float                               layernorm_eps,
+          int                                 start_id,
+          int                                 end_id,
+          int                                 prompt_learning_start_id,  // only needed by p/prompt-tuning
+          PromptLearningType                  prompt_learning_type,
+          bool                                use_gptj_residual,
+          float                               beam_search_diversity_rate,
+          size_t                              top_k,
+          float                               top_p,
+          unsigned long long                  random_seed,
+          float                               temperature,
+          float                               len_penalty,
+          float                               repetition_penalty,
+          NcclParam                           tensor_para,
+          NcclParam                           pipeline_para,
+          cudaStream_t                        stream,
+          cublasMMWrapper*                    cublas_wrapper,
+          IAllocator*                         allocator,
+          bool                                is_free_buffer_after_forward,
+          cudaDeviceProp*                     cuda_device_prop         = nullptr,
+          AttentionType                       attention_type           = AttentionType::UNFUSED_MHA,
+          std::shared_ptr<AbstractCustomComm> custom_all_reduce_comm   = nullptr,
+          int                                 enable_custom_all_reduce = 0);
+    
+        Llama(size_t                              head_num,
           size_t                              size_per_head,
           size_t                              inter_size,
           size_t                              num_layer,

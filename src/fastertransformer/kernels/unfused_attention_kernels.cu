@@ -1530,6 +1530,7 @@ __global__ void add_fusedQKV_bias_transpose_kernel(T*                           
                                                    const int  size_per_head,
                                                    const int  rotary_embedding_dim,
                                                    const float rotary_position_interpolation_factor,
+                                                   const float rotary_position_freq_base,
                                                    const bool neox_rotary_style)
 {
     // This kernel add bias to QKV, which has shape [batch_size, seq_len, 3, head_num, size_per_head], and
@@ -1623,7 +1624,7 @@ __global__ void add_fusedQKV_bias_transpose_kernel(T*                           
 
     const float rotary_position = dst_kv_seq_idx / rotary_position_interpolation_factor;
     if (!neox_rotary_style) {
-        mmha::apply_rotary_embedding(q, k, tidx, rotary_embedding_dim, rotary_position);
+        mmha::apply_rotary_embedding(q, k, tidx, rotary_embedding_dim, rotary_position, rotary_position_freq_base);
     }
     else {
         const bool do_rotary = !is_masked && vec_size * tidx < rotary_embedding_dim;
@@ -1649,7 +1650,7 @@ __global__ void add_fusedQKV_bias_transpose_kernel(T*                           
             mmha::vec_from_smem_transpose(q, q_smem, transpose_idx, smem_pitch);
             mmha::vec_from_smem_transpose(k, k_smem, transpose_idx, smem_pitch);
 
-            mmha::apply_rotary_embedding(q, k, transpose_idx / tidx_factor, rotary_embedding_dim, rotary_position);
+            mmha::apply_rotary_embedding(q, k, transpose_idx / tidx_factor, rotary_embedding_dim, rotary_position, rotary_position_freq_base);
 
             mmha::write_smem_transpose(q, q_smem, transpose_idx, smem_pitch);
             mmha::write_smem_transpose(k, k_smem, transpose_idx, smem_pitch);
@@ -1696,6 +1697,7 @@ __global__ void add_fusedQKV_bias_transpose_kernel(T*                           
                                                                                              size_per_head,            \
                                                                                              rotary_embedding_dim,     \
                                                                                              rotary_position_interpolation_factor,    \
+                                                                                             rotary_position_freq_base, \
                                                                                              neox_rotary_style);
 
 template<typename T>
@@ -1713,6 +1715,7 @@ void invokeAddFusedQKVBiasTranspose(T*                               q_buf,
                                     const int                        size_per_head,
                                     const int                        rotary_embedding_dim,
                                     const float                      rotary_position_interpolation_factor,
+                                    const float                      rotary_position_freq_base,
                                     const int                        neox_rotary_style,
                                     const float*                     scale,
                                     const int                        int8_mode,
@@ -1770,7 +1773,8 @@ void invokeAddFusedQKVBiasTranspose(T*                               q_buf,
                                                  const int                        head_num,                            \
                                                  const int                        size_per_head,                       \
                                                  const int                        rotary_embedding_dim,                \
-                                                 const float                      rotary_position_interpolation_factor,               \
+                                                 const float                      rotary_position_interpolation_factor,\
+                                                 const float                      rotary_position_freq_base,           \
                                                  const int                        neox_rotary_style,                   \
                                                  const float*                     scale,                               \
                                                  const int                        int8_mode,                           \

@@ -59,6 +59,7 @@ public:
             const size_t             vocab_size,
             const size_t             rotary_embedding_dim,
             const float              rotary_position_interpolation_factor,
+            const float              rotary_position_freq_base,
             const float              layernorm_eps,
             const int                start_id,
             const int                end_id,
@@ -73,6 +74,7 @@ public:
         vocab_size_(vocab_size),
         rotary_embedding_dim_(rotary_embedding_dim),
         rotary_position_interpolation_factor_(rotary_position_interpolation_factor),
+        rotary_position_freq_base_(rotary_position_freq_base),
         layernorm_eps_(layernorm_eps),
         start_id_(start_id),
         end_id_(end_id),
@@ -155,6 +157,7 @@ public:
                                           vocab_size_,
                                           rotary_embedding_dim_,
                                           rotary_position_interpolation_factor_,
+                                          rotary_position_freq_base_,
                                           layernorm_eps_,
                                           start_id_,
                                           end_id_,
@@ -314,6 +317,7 @@ private:
     const size_t vocab_size_;
     const size_t rotary_embedding_dim_;
     const float  rotary_position_interpolation_factor_;
+    const float  rotary_position_freq_base_;
     const float  layernorm_eps_;
     const int    start_id_;
     const int    end_id_;
@@ -346,6 +350,7 @@ public:
             const int64_t            vocab_size,
             const int64_t            rotary_embedding_dim,
             const double             rotary_position_interpolation_factor,
+            const double             rotary_position_freq_base,
             const double             layernorm_eps,
             const int64_t            start_id,
             const int64_t            end_id,

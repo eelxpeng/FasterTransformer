@@ -209,13 +209,13 @@ void LlamaDecoder<T>::forward(std::unordered_map<std::string, Tensor>*          
     //              is real local_batch_size.
     //      masked_tokens[local_batch_size, memory_len]
     //      rotary_position_interpolation_factor [1] on cpu
-
+    //      rotary_position_freq_base [1] on cpu 
     // output tensors:
     //      decoder_output [local_batch_size, hidden_dimension],
     //      key_cache [num_layer, batch_size, head_num, size_per_head // x, memory_len, x]
     //      value_cache [num_layer, batch_size, head_num, memory_len, size_per_head]
 
-    FT_CHECK(input_tensors->size() == 12);
+    FT_CHECK(input_tensors->size() == 13);
     FT_CHECK(output_tensors->size() == 3);
 
     const DataType data_type        = getTensorType<T>();

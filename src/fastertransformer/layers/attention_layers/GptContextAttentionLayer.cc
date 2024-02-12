@@ -61,7 +61,7 @@ void GptContextAttentionLayer<T>::forward(TensorMap*                output_tenso
     int*       cu_seqlens              = input_tensors->getPtr<int>("cu_seqlens", nullptr);
     T*         linear_bias_slopes      = input_tensors->getPtr<T>("linear_bias_slopes", nullptr);
     const auto rotary_position_interpolation_factor  = input_tensors->getVal<float>("rotary_position_interpolation_factor", 1.);
-
+    const auto rotary_position_freq_base  = input_tensors->getVal<float>("rotary_position_freq_base", 10000.);
     /* float*     attention_query_dynamic_scale = input_tensors->getPtr<float>("attention_query_dynamic_scale",
      * nullptr); */
 
@@ -176,6 +176,7 @@ void GptContextAttentionLayer<T>::forward(TensorMap*                output_tenso
                                    size_per_head_,
                                    rotary_embedding_dim_,
                                    rotary_position_interpolation_factor,
+                                   rotary_position_freq_base,
                                    neox_rotary_style_,
                                    has_relative_attention_bias ? nullptr : attention_weights->query_weight.scale_out,  // attention_weights->query_weight.scale_out,
                                    int8_mode_,
