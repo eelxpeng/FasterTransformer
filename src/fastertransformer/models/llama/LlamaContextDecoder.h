@@ -44,6 +44,8 @@ private:
     bool   neox_rotary_style_;
     bool   use_gptj_residual_;
     float  layernorm_eps_;
+    size_t moe_frequency_;
+    size_t num_moe_experts_;
 
     // calculated data
     size_t hidden_units_;
@@ -81,6 +83,12 @@ protected:
     int*    padding_offset_         = nullptr;
     int*    cu_seqlens_             = nullptr;
 
+    //for MOE
+    T*   expert_scales_                            = nullptr;
+    int* expanded_source_row_to_expanded_dest_row_ = nullptr;
+    int* expert_for_source_row_                    = nullptr;
+    T*   fc2_result_                               = nullptr;
+
 public:
     LlamaContextDecoder(size_t                              head_num,
                         size_t                              size_per_head,
@@ -89,6 +97,8 @@ public:
                         size_t                              rotary_embedding_dim,
                         bool                                neox_rotary_style,
                         bool                                use_gptj_residual,
+                        size_t                              num_moe_experts,
+                        size_t                              moe_frequency,
                         float                               layernorm_eps,
                         NcclParam                           tensor_para,
                         NcclParam                           pipeline_para,

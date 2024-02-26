@@ -48,7 +48,8 @@ void LlamaContextDecoder<T>::initialize()
                                                    0,  // max_seq_len
                                                    head_num_,
                                                    size_per_head_,
-                                                   0,  // expert_num
+                                                   num_moe_experts_,  // expert_num
+                                                   moe_frequency_, // moe freq
                                                    inter_size_,
                                                    tensor_para_,
                                                    stream_,
@@ -83,6 +84,20 @@ void LlamaContextDecoder<T>::allocateBuffer(size_t batch_size, size_t seq_len)
     padding_offset_ =
         reinterpret_cast<int*>(allocator_->reMalloc(padding_offset_, sizeof(int) * batch_size * seq_len, false));
     cu_seqlens_ = reinterpret_cast<int*>(allocator_->reMalloc(cu_seqlens_, sizeof(int) * (batch_size + 1), false));
+
+    // for moe
+    //TODO: @mreddie Pass top k as parameter
+    size_t moe_k_ = 1;
+    expert_scales_ = reinterpret_cast<T*>(
+        allocator_->malloc(sizeof(T) * pad_to_multiple_of_16(moe_k_ * batch_size * seq_len), false));
+    expanded_source_row_to_expanded_dest_row_ = reinterpret_cast<int*>(
+        allocator_->malloc(sizeof(int) * pad_to_multiple_of_16(moe_k_ * batch_size * seq_len), false));
+    expert_for_source_row_ = reinterpret_cast<int*>(
+        allocator_->malloc(sizeof(int) * pad_to_multiple_of_16(moe_k_ * batch_size * seq_len), false));
+    //TODO: @mreddie This seems can grow huge if we have larger bs and seq_len. Investigate if we can optimize this 
+    fc2_result_ = reinterpret_cast<T*>(
+        allocator_->malloc(sizeof(T) * pad_to_multiple_of_16(moe_k_ * batch_size * seq_len * hidden_units_), false));
+
     is_allocate_buffer_ = true;
 }
 
@@ -97,6 +112,11 @@ void LlamaContextDecoder<T>::freeBuffer()
         allocator_->free((void**)(&h_pinned_token_num_ptr_), true);
         allocator_->free((void**)(&padding_offset_));
         allocator_->free((void**)(&cu_seqlens_));
+
+        allocator_->free((void**)(&expert_scales_));
+        allocator_->free((void**)(&expanded_source_row_to_expanded_dest_row_));
+        allocator_->free((void**)(&expert_for_source_row_));
+        allocator_->free((void**)(&fc2_result_));
         is_allocate_buffer_ = false;
     }
 }
@@ -138,6 +158,8 @@ LlamaContextDecoder<T>::LlamaContextDecoder(size_t                              
                                             size_t                              rotary_embedding_dim,
                                             bool                                neox_rotary_style,
                                             bool                                use_gptj_residual,
+                                            size_t                              num_moe_experts,
+                                            size_t                              moe_frequency,
                                             float                               layernorm_eps,
                                             NcclParam                           tensor_para,
                                             NcclParam                           pipeline_para,
@@ -157,6 +179,8 @@ LlamaContextDecoder<T>::LlamaContextDecoder(size_t                              
     rotary_embedding_dim_(rotary_embedding_dim),
     neox_rotary_style_(neox_rotary_style),
     use_gptj_residual_(use_gptj_residual),
+    num_moe_experts_(num_moe_experts),
+    moe_frequency_(moe_frequency),
     layernorm_eps_(layernorm_eps),
     hidden_units_(head_num * size_per_head),
     tensor_para_(tensor_para),
@@ -179,6 +203,8 @@ LlamaContextDecoder<T>::LlamaContextDecoder(LlamaContextDecoder<T> const& decode
     rotary_embedding_dim_(decoder.rotary_embedding_dim_),
     neox_rotary_style_(decoder.neox_rotary_style_),
     use_gptj_residual_(decoder.use_gptj_residual_),
+    num_moe_experts_(decoder.num_moe_experts_),
+    moe_frequency_(decoder.moe_frequency_),
     layernorm_eps_(decoder.layernorm_eps_),
     hidden_units_(decoder.hidden_units_),
     tensor_para_(decoder.tensor_para_),
@@ -424,35 +450,75 @@ void LlamaContextDecoder<T>::forward(std::unordered_map<std::string, Tensor>*   
                 TensorMap ffn_input_tensors(
                     {{"ffn_input",
                       Tensor{MEMORY_GPU, data_type, {h_token_num, (size_t)hidden_units_}, decoder_normed_input_}}});
-                TensorMap ffn_output_tensors({{"ffn_output",
-                                               Tensor{MEMORY_GPU,
-                                                      data_type,
-                                                      {h_token_num, (size_t)hidden_units_},
-                                                      use_gptj_residual_ ? ffn_output_ : layer_output}}});
+
+                bool use_moe = true;
+                //TODO: @mreddie make top k also a parameter
+                size_t moe_k_ = 1;
+                TensorMap ffn_output_tensors;
+                if (!use_moe) {
+                    ffn_output_tensors.insert(
+                        "ffn_output",
+                        Tensor{MEMORY_GPU,
+                                data_type,
+                                {h_token_num, (size_t)hidden_units_},
+                                use_gptj_residual_ ? ffn_output_ : layer_output});
+                }
+                else {
+                    ffn_input_tensors.insert("moe_k", Tensor{MEMORY_CPU, TYPE_UINT64, {1}, &moe_k_});
+
+                    ffn_output_tensors.insert("ffn_output",
+                                            Tensor{MEMORY_GPU,
+                                                    data_type,
+                                                    {moe_k_ * h_token_num, (size_t)hidden_units_},
+                                                    fc2_result_});
+                    ffn_output_tensors.insert(
+                        "expert_scales", Tensor{MEMORY_GPU, data_type, {h_token_num, moe_k_}, expert_scales_});
+                    ffn_output_tensors.insert(
+                        "expanded_source_row_to_expanded_dest_row",
+                        Tensor{MEMORY_GPU, TYPE_INT32, {h_token_num, moe_k_}, expanded_source_row_to_expanded_dest_row_});
+                    ffn_output_tensors.insert(
+                        "expert_for_source_row",
+                        Tensor{MEMORY_GPU, TYPE_INT32, {h_token_num, moe_k_}, expert_for_source_row_});
+                }
+
                 ffn_layer_->forward(
                     &ffn_output_tensors, &ffn_input_tensors, &gpt_decoder_layer_weight->at(l)->ffn_weights);
 
-                if (use_gptj_residual_) {
-                    // Original workflow:
-                    //      layer_output = layer_input + reduceSum(ffn_output + self_attn_output + ffn_output_bias)
-                    // Our workflow:
-                    //      layer_output = reduceSum(ffn_output + self_attn_output + ffn_output_bias + layer_input /
-                    //      TP_size)
-                    // They are equivalent on math, but we can use same buffer for layer_input and layer_output
+                // if (use_gptj_residual_) {
+                //     // Original workflow:
+                //     //      layer_output = layer_input + reduceSum(ffn_output + self_attn_output + ffn_output_bias)
+                //     // Our workflow:
+                //     //      layer_output = reduceSum(ffn_output + self_attn_output + ffn_output_bias + layer_input /
+                //     //      TP_size)
+                //     // They are equivalent on math, but we can use same buffer for layer_input and layer_output
 
-                    invokeAddBiasAttentionFfnResidual(layer_output,
-                                                      ffn_output_,
-                                                      self_attn_output_,
-                                                      layer_input,
-                                                      gpt_decoder_layer_weight->at(l)->ffn_weights.output_weight.bias,
-                                                      h_token_num,
-                                                      hidden_units_,
-                                                      tensor_para_.world_size_,
-                                                      stream_);
-                    if (tensor_para_.world_size_ > 1) {
-                        ftNcclAllReduceSum(
-                            layer_output, layer_output, h_token_num * hidden_units_, tensor_para_, stream_);
-                    }
+                //     invokeAddBiasAttentionFfnResidual(layer_output,
+                //                                       ffn_output_,
+                //                                       self_attn_output_,
+                //                                       layer_input,
+                //                                       gpt_decoder_layer_weight->at(l)->ffn_weights.output_weight.bias,
+                //                                       h_token_num,
+                //                                       hidden_units_,
+                //                                       tensor_para_.world_size_,
+                //                                       stream_);
+                //     if (tensor_para_.world_size_ > 1) {
+                //         ftNcclAllReduceSum(
+                //             layer_output, layer_output, h_token_num * hidden_units_, tensor_para_, stream_);
+                //     }
+                // }
+                if(use_moe) {
+                    finalize_moe_routing_kernelLauncher(fc2_result_,
+                                                        layer_output,
+                                                        self_attn_output_,
+                                                        (T*)nullptr,
+                                                        gpt_decoder_layer_weight->at(l)->ffn_weights.output_weight.bias,
+                                                        expert_scales_,
+                                                        expanded_source_row_to_expanded_dest_row_,
+                                                        expert_for_source_row_,
+                                                        h_token_num,
+                                                        hidden_units_,
+                                                        moe_k_,
+                                                        stream_);
                 }
                 else {
                     invokeAddBiasResidual(layer_output,

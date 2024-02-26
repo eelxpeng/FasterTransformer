@@ -41,7 +41,8 @@ private:
     float  rotary_position_interpolation_factor_;
     float  rotary_position_freq_base_;
     float layernorm_eps_;
-
+    size_t num_moe_experts_;
+    size_t moe_frequency_;
     static constexpr bool  neox_rotary_style_ = true;
 
     int    start_id_;
@@ -186,6 +187,8 @@ public:
           int                                 prompt_learning_start_id,  // only needed by p/prompt-tuning
           PromptLearningType                  prompt_learning_type,
           bool                                use_gptj_residual,
+          size_t                              num_moe_experts,
+          size_t                              moe_frequency,
           float                               beam_search_diversity_rate,
           size_t                              top_k,
           float                               top_p,

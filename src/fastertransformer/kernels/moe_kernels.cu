@@ -618,6 +618,28 @@ void CutlassMoeFCRunner<T, WeightType, Enable>::configure_ws_ptrs(
     }
 }
 
+
+// template<typename T>
+// void topk_gating_sigmoid_kernelLauncher(const T*     input,
+//                                         const bool*  finished,
+//                                         T*           output,
+//                                         T*           sigmoid_temp_output,
+//                                         int*         indices,
+//                                         int*         source_row,
+//                                         const int    num_rows,
+//                                         const int    num_experts,
+//                                         const int    k,
+//                                         cudaStream_t stream)
+// {
+//     static constexpr int TPB = 256;
+//     FT_CHECK(softmax_temp_output != nullptr);
+//     // moe_softmax<T, TPB><<<num_rows, TPB, 0, stream>>>(input, finished, sigmoid_temp_output, num_experts);
+
+//     sigmoid_kernel(T* data, const int size, const float scale)
+//     moe_top_k<T, TPB><<<num_rows, TPB, 0, stream>>>(
+//         sigmoid_temp_output, finished, output, indices, source_row, num_experts, k);
+// }
+
 template<typename T, typename WeightType, typename Enable>
 void CutlassMoeFCRunner<T, WeightType, Enable>::run_moe_fc(const T*          input_activations,
                                                            const T*          gating_output,
@@ -627,7 +649,7 @@ void CutlassMoeFCRunner<T, WeightType, Enable>::run_moe_fc(const T*          inp
                                                            ActivationType    fc1_activation_type,
                                                            const WeightType* fc2_expert_weights,
                                                            const T*          fc2_scales,
-                                                           const int         num_rows,
+                                                           const int         num_rows, //batch size
                                                            const int         hidden_size,
                                                            const int         inter_size,
                                                            const int         num_experts,
@@ -708,6 +730,16 @@ void CutlassMoeFCRunner<T, WeightType, Enable>::run_moe_fc(const T*          inp
                                           k,
                                           stream);
 
+    //topk_gating_sigmoid_kernelLauncher<T>(gating_output,
+    //                                       finished,
+    //                                       expert_scales,
+    //                                       softmax_out_,
+    //                                       expert_for_source_row, // indices, i -> expert_id map
+    //                                       source_rows_, // i -> i
+    //                                       num_rows,
+    //                                       num_experts,
+    //                                       k,
+    //                                       stream);
 #ifndef NDEBUG
     cudaDeviceSynchronize();
     check_cuda_error(cudaGetLastError());

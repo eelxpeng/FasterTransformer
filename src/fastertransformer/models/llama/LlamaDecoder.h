@@ -55,7 +55,9 @@ protected:
     bool   use_gptj_residual_;
     size_t hidden_units_;
     float  layernorm_eps_;
-
+    size_t moe_frequency_;
+    size_t num_moe_experts_;
+    
     NcclParam tensor_para_;
     NcclParam pipeline_para_;
 
@@ -67,6 +69,11 @@ protected:
     T* ffn_output_           = nullptr;
     T* decoder_layer_output_ = nullptr;
 
+    T*   expert_scales_                            = nullptr;
+    int* expanded_source_row_to_expanded_dest_row_ = nullptr;
+    int* expert_for_source_row_                    = nullptr;
+    T*   fc2_result_                               = nullptr;
+    
     BaseAttentionLayer<T>* self_attention_layer_;
     FfnLayer<T>*           ffn_layer_;
 
@@ -78,6 +85,8 @@ public:
                  size_t                              rotary_embedding_dim,
                  bool                                neox_rotary_style,
                  bool                                use_gptj_residual,
+                 size_t                              num_moe_experts,
+                 size_t                              moe_frequency,
                  float                               layernorm_eps,
                  NcclParam                           tensor_para,
                  NcclParam                           pipeline_para,

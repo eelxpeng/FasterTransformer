@@ -37,6 +37,7 @@ public:
                                size_t                              head_num,
                                size_t                              size_per_head,
                                size_t                              expert_num,
+                               size_t                              moe_frequency,
                                size_t                              inter_size,
                                NcclParam                           tensor_para,
                                cudaStream_t                        stream,
@@ -48,6 +49,23 @@ public:
                                bool                                use_gated_activation     = false,
                                std::shared_ptr<AbstractCustomComm> custom_all_reduce_comm   = nullptr,
                                int                                 enable_custom_all_reduce = 0);
+
+    TensorParallelSiluFfnLayer(size_t                              max_batch_size,
+                                size_t                              max_seq_len,
+                                size_t                              head_num,
+                                size_t                              size_per_head,
+                                size_t                              expert_num,
+                                size_t                              inter_size,
+                                NcclParam                           tensor_para,
+                                cudaStream_t                        stream,
+                                cublasMMWrapper*                    cublas_wrapper,
+                                IAllocator*                         allocator,
+                                bool                                do_all_reduce,
+                                bool                                is_free_buffer_after_forward,
+                                bool                                is_sparse,
+                                bool                                use_gated_activation     = false,
+                                std::shared_ptr<AbstractCustomComm> custom_all_reduce_comm   = nullptr,
+                                int                                 enable_custom_all_reduce = 0);
 
     TensorParallelSiluFfnLayer(TensorParallelSiluFfnLayer<T> const& ffn_layer);
 

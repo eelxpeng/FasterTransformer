@@ -66,7 +66,9 @@ public:
             const int64_t            tensor_para_size,
             const int64_t            pipeline_para_size,
             const size_t             max_seq_len,
-            const bool               use_gptj_residual):
+            const bool               use_gptj_residual,
+            const size_t             num_moe_experts,
+            const size_t             moe_frequency):
         head_num_(head_num),
         size_per_head_(size_per_head),
         inter_size_(inter_size),
@@ -81,7 +83,9 @@ public:
         use_gptj_residual_(use_gptj_residual),
         tensor_para_size_(tensor_para_size),
         pipeline_para_size_(pipeline_para_size),
-        max_seq_len_(max_seq_len)
+        max_seq_len_(max_seq_len),
+        num_moe_experts_(num_moe_experts),
+        moe_frequency_(moe_frequency)
     {
         ft::check_cuda_error(cublasLtCreate(&cublasltHandle_));
         cublas_algo_map_      = new ft::cublasAlgoMap(GEMM_CONFIG, "");
@@ -164,6 +168,8 @@ public:
                                           end_id_ + 1,  // p/prompt tuning virtual token start id
                                           ft::PromptLearningType::no_prompt,
                                           use_gptj_residual_,
+                                          num_moe_experts_,
+                                          moe_frequency_,
                                           0.0f,  // beam_search_diversity_rate,
                                           1,     // top_k,
                                           0.0,   // top_p,
@@ -322,6 +328,8 @@ private:
     const int    start_id_;
     const int    end_id_;
     const bool   use_gptj_residual_;
+    const size_t num_moe_experts_;
+    const size_t moe_frequency_;
 
     // const ft::gptVariantParams Llama_variant_params_;
 
@@ -358,6 +366,8 @@ public:
             const int64_t            pipeline_para_size,
             const int64_t            max_seq_len,
             const bool               use_gptj_residual,
+            const int64_t            num_moe_experts_,
+            const int64_t            moe_frequency_,
             at::ScalarType           scalar_type);
 
     ~LlamaOp();

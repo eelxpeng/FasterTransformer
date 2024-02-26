@@ -34,6 +34,8 @@ void Llama<T>::initialize()
                                                       rotary_embedding_dim_,
                                                       neox_rotary_style_,
                                                       use_gptj_residual_,
+                                                      num_moe_experts_,
+                                                      moe_frequency_,
                                                       layernorm_eps_,
                                                       tensor_para_,
                                                       pipeline_para_,
@@ -45,7 +47,7 @@ void Llama<T>::initialize()
                                                       attention_type_,
                                                       custom_all_reduce_comm_,
                                                       enable_custom_all_reduce_);
-
+    //TODO: pass moe parameters
     gpt_decoder_ = new LlamaDecoder<T>(head_num_,
                                        size_per_head_,
                                        inter_size_,
@@ -53,6 +55,8 @@ void Llama<T>::initialize()
                                        rotary_embedding_dim_,
                                        neox_rotary_style_,
                                        use_gptj_residual_,
+                                       num_moe_experts_,
+                                       moe_frequency_,
                                        layernorm_eps_,
                                        tensor_para_,
                                        pipeline_para_,
@@ -268,7 +272,9 @@ Llama<T>::Llama(size_t                              head_num,
     use_gptj_residual_(use_gptj_residual),
     hidden_units_(head_num * size_per_head),
     local_head_num_(head_num / 1),
-    attention_type_(attention_type)
+    attention_type_(attention_type),
+    num_moe_experts_(0),
+    moe_frequency_(0)
 {
     tensor_para_.world_size_   = 1;
     tensor_para_.rank_         = 0;
@@ -302,6 +308,8 @@ Llama<T>::Llama(size_t                              head_num,
                 int                                 prompt_learning_start_id,  // only needed by p/prompt-tuning
                 PromptLearningType                  prompt_learning_type,
                 bool                                use_gptj_residual,
+                size_t                              num_moe_experts,
+                size_t                              moe_frequency,
                 float                               beam_search_diversity_rate,
                 size_t                              top_k,
                 float                               top_p,
@@ -340,7 +348,9 @@ Llama<T>::Llama(size_t                              head_num,
     local_head_num_(head_num / tensor_para.world_size_),
     custom_all_reduce_comm_(custom_all_reduce_comm),
     enable_custom_all_reduce_(enable_custom_all_reduce),
-    attention_type_(attention_type)
+    attention_type_(attention_type),
+    num_moe_experts_(num_moe_experts),
+    moe_frequency_(moe_frequency)
 {
     int local_vacab_size = ceil(vocab_size_ / 1.f / tensor_para_.world_size_);
     if (std::is_same<half, T>::value) {
@@ -396,6 +406,8 @@ Llama<T>::Llama(size_t                              head_num,
                                             prompt_learning_start_id,  // only needed by p/prompt-tuning
                                   prompt_learning_type,
                                                 use_gptj_residual,
+                                                0, //moe experts
+                                                0, //moe_frequency
                                                beam_search_diversity_rate,
                                               top_k,
                                                top_p,
@@ -432,6 +444,8 @@ Llama<T>::Llama(Llama<T> const& gpt):
     prompt_learning_start_id_(gpt.prompt_learning_start_id_),
     prompt_learning_type_(gpt.prompt_learning_type_),
     use_gptj_residual_(gpt.use_gptj_residual_),
+    num_moe_experts_(gpt.num_moe_experts_),
+    moe_frequency_(gpt.moe_frequency_),
     hidden_units_(gpt.hidden_units_),
     tensor_para_(gpt.tensor_para_),
     pipeline_para_(gpt.pipeline_para_),

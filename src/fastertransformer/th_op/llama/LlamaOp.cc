@@ -35,6 +35,8 @@ LlamaOp::LlamaOp(const int64_t                head_num,
                      const int64_t            pipeline_para_size,
                      const int64_t            max_seq_len,
                      const bool               use_gptj_residual,
+                     const int64_t            num_moe_experts,
+                     const int64_t            moe_frequency,
                      const at::ScalarType     scalar_type):
     st_(scalar_type)
 {
@@ -55,7 +57,9 @@ LlamaOp::LlamaOp(const int64_t                head_num,
                                          tensor_para_size,
                                          pipeline_para_size,
                                          (size_t)max_seq_len,
-                                         use_gptj_residual);
+                                         use_gptj_residual,
+                                         num_moe_experts,
+                                         moe_frequency);
             break;
         case at::ScalarType::Half:
             FT_LOG_DEBUG("Init LlamaOp using fp16");
@@ -73,7 +77,9 @@ LlamaOp::LlamaOp(const int64_t                head_num,
                                         tensor_para_size,
                                         pipeline_para_size,
                                         (size_t)max_seq_len,
-                                        use_gptj_residual);
+                                        use_gptj_residual,
+                                        num_moe_experts,
+                                        moe_frequency);
             break;
 #ifdef ENABLE_BF16
         case at::ScalarType::BFloat16:
@@ -92,7 +98,9 @@ LlamaOp::LlamaOp(const int64_t                head_num,
                                         tensor_para_size,
                                         pipeline_para_size,
                                         (size_t)max_seq_len,
-                                        use_gptj_residual);
+                                        use_gptj_residual,
+                                        num_moe_experts,
+                                        moe_frequency);
             break;
 #endif
         default:
@@ -202,6 +210,8 @@ static auto fasterTransformerLlamaTHS =
                               int64_t,
                               int64_t,
                               bool,
+                              int64_t, // expert number
+                              int64_t,  // moe frequency
                               at::ScalarType>())
         .def("forward", &torch_ext::LlamaOp::forward)
         .def("load_weights", &torch_ext::LlamaOp::load_weights)

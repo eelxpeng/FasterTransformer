@@ -66,6 +66,7 @@ TensorParallelSiluFfnLayer<T>::TensorParallelSiluFfnLayer(size_t           max_b
                                                           size_t           head_num,
                                                           size_t           size_per_head,
                                                           size_t           expert_num,
+                                                          size_t           moe_frequency,
                                                           size_t           inter_size,
                                                           NcclParam        tensor_para,
                                                           cudaStream_t     stream,
@@ -82,6 +83,7 @@ TensorParallelSiluFfnLayer<T>::TensorParallelSiluFfnLayer(size_t           max_b
                     head_num,
                     size_per_head,
                     expert_num,
+                    moe_frequency,
                     inter_size / tensor_para.world_size_,
                     stream,
                     cublas_wrapper,
@@ -95,6 +97,44 @@ TensorParallelSiluFfnLayer<T>::TensorParallelSiluFfnLayer(size_t           max_b
     do_all_reduce_(do_all_reduce)
 {
     FT_CHECK(inter_size % tensor_para_.world_size_ == 0);
+}
+
+
+template<typename T>
+TensorParallelSiluFfnLayer<T>::TensorParallelSiluFfnLayer(size_t           max_batch_size,
+                                                          size_t           max_seq_len,
+                                                          size_t           head_num,
+                                                          size_t           size_per_head,
+                                                          size_t           expert_num,
+                                                          size_t           inter_size,
+                                                          NcclParam        tensor_para,
+                                                          cudaStream_t     stream,
+                                                          cublasMMWrapper* cublas_wrapper,
+                                                          IAllocator*      allocator,
+                                                          bool             do_all_reduce,
+                                                          bool             is_free_buffer_after_forward,
+                                                          bool             is_sparse,
+                                                          bool             use_gated_activation,
+                                                          std::shared_ptr<AbstractCustomComm> custom_all_reduce_comm,
+                                                          int                                 enable_custom_all_reduce):
+    TensorParallelSiluFfnLayer<T>(max_batch_size,
+                    max_seq_len,
+                    head_num,
+                    size_per_head,
+                    expert_num,
+                    1,
+                    inter_size,
+                    tensor_para,
+                    stream,
+                    cublas_wrapper,
+                    allocator,
+                    do_all_reduce,
+                    is_free_buffer_after_forward,
+                    is_sparse,
+                    use_gated_activation,
+                    custom_all_reduce_comm,
+                    enable_custom_all_reduce)
+{
 }
 
 template<typename T>

@@ -41,6 +41,7 @@ private:
     size_t head_num_;       // (martinma): this member is not used in this class. Remove it?
     size_t size_per_head_;  // (martinma): this member is not used in this class. Remove it?
     size_t expert_num_;
+    size_t moe_frequency_;
 
     // calculated data
     size_t hidden_units_;
@@ -104,6 +105,7 @@ public:
              size_t           head_num,       // (martinma): redundant parameter?
              size_t           size_per_head,  // (martinma): redundant parameter?
              size_t           expert_num,
+             size_t           moe_frequency,
              size_t           inter_size,
              cudaStream_t     stream,
              cublasMMWrapper* cublas_wrapper,
@@ -112,6 +114,21 @@ public:
              bool             sparse               = false,
              int              int8_mode            = 0,
              bool             use_gated_activation = false);
+     FfnLayer(size_t          max_batch_size,
+             size_t           max_seq_len,
+             size_t           head_num,       // (martinma): redundant parameter?
+             size_t           size_per_head,  // (martinma): redundant parameter?
+             size_t           expert_num,
+             size_t           inter_size,
+             cudaStream_t     stream,
+             cublasMMWrapper* cublas_wrapper,
+             IAllocator*      allocator,
+             bool             is_free_buffer_after_forward,
+             bool             sparse               = false,
+             int              int8_mode            = 0,
+             bool             use_gated_activation = false): 
+    FfnLayer(max_batch_size, max_seq_len, head_num, size_per_head, expert_num, 1, inter_size, stream, cublas_wrapper, allocator, is_free_buffer_after_forward, sparse, int8_mode, use_gated_activation)
+    {};
 
     FfnLayer(FfnLayer<T> const& ffn_layer);
 
@@ -204,6 +221,7 @@ public:
                  size_t           head_num,
                  size_t           size_per_head,
                  size_t           expert_num,
+                 size_t           moe_frequency,
                  size_t           inter_size,
                  cudaStream_t     stream,
                  cublasMMWrapper* cublas_wrapper,

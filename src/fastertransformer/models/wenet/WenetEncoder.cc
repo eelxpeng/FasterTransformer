@@ -73,6 +73,7 @@ void WenetEncoder<T>::initialize()
                                          head_num_,
                                          size_per_head_,
                                          0,  // expert_num
+                                         1,
                                          inter_size_,
                                          stream_,
                                          cublas_wrapper_,
