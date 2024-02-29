@@ -56,7 +56,6 @@ void FfnLayer<T>::forward(TensorMap* output_tensors, TensorMap* input_tensors, c
         moe_k   = input_tensors->at("moe_k").getVal<size_t>();
     }
     allocateBuffer(input_tensors->at("ffn_input").shape[0], moe_k, use_moe);
-
     const int m             = input_tensors->at("ffn_input").shape[0];
     T*        output_tensor = output_tensors->at("ffn_output").getPtr<T>();
     const T*  input_tensor  = input_tensors->at("ffn_input").getPtr<const T>();
@@ -67,12 +66,12 @@ void FfnLayer<T>::forward(TensorMap* output_tensors, TensorMap* input_tensors, c
     int* permuted_experts = nullptr;
 
     // moe outputs should exist or not together
-    FT_CHECK((use_moe && output_tensors->isExist("expert_scales")
-              && output_tensors->isExist("expanded_source_row_to_expanded_dest_row")
-              && output_tensors->isExist("expert_for_source_row"))
-             || (!use_moe && !output_tensors->isExist("expert_scales")
-                 && !output_tensors->isExist("expanded_source_row_to_expanded_dest_row")
-                 && !output_tensors->isExist("expert_for_source_row")));
+    // FT_CHECK((use_moe && output_tensors->isExist("expert_scales")
+    //           && output_tensors->isExist("expanded_source_row_to_expanded_dest_row")
+    //           && output_tensors->isExist("expert_for_source_row"))
+    //          || (!use_moe && !output_tensors->isExist("expert_scales")
+    //              && !output_tensors->isExist("expanded_source_row_to_expanded_dest_row")
+    //              && !output_tensors->isExist("expert_for_source_row")));
 
     if (use_moe) {
         expert_scales    = output_tensors->at("expert_scales").getPtr<T>();
@@ -83,8 +82,8 @@ void FfnLayer<T>::forward(TensorMap* output_tensors, TensorMap* input_tensors, c
     // TODO: INT8 and Sparsity are currently not implemented (geglu or reglu)
     const bool use_gated_activation = use_gated_activation_ && ffn_weights->intermediate_weight2.kernel != nullptr;
 
-    // moe can't be used with use_gated_activation currently
-    FT_CHECK(!(use_gated_activation && use_moe));
+    // // moe can't be used with use_gated_activation currently
+    // FT_CHECK(!(use_gated_activation && use_moe));
     auto activation_type = getActivationType();
 
     const int* ia3_tasks = input_tensors->getPtr<const int>("ia3_tasks", nullptr);
@@ -103,16 +102,17 @@ void FfnLayer<T>::forward(TensorMap* output_tensors, TensorMap* input_tensors, c
                               hidden_units_,
                               moe_gates_buf_,
                               expert_num_);
-
         if (int8_mode_ == 0) {
             moe_fc_runner_->run_moe_fc(input_tensor,
                                        moe_gates_buf_,
                                        ffn_weights->intermediate_weight.kernel,
-                                       ffn_weights->intermediate_weight.weight_only_quant_scale,
+                                       (T*)nullptr, //ffn_weights->intermediate_weight.weight_only_quant_scale,
                                        ffn_weights->intermediate_weight.bias,
                                        activation_type,
                                        ffn_weights->output_weight.kernel,
-                                       ffn_weights->output_weight.weight_only_quant_scale,
+                                       (T*)nullptr,//ffn_weights->output_weight.weight_only_quant_scale,
+                                       ffn_weights->intermediate_weight2.kernel, // up_projc weight only used in llama
+                                       (T*)nullptr, // up_proj bias, not used
                                        m,
                                        hidden_units_,
                                        inter_size_,
@@ -144,6 +144,8 @@ void FfnLayer<T>::forward(TensorMap* output_tensors, TensorMap* input_tensors, c
                 activation_type,
                 reinterpret_cast<const uint8_t*>(ffn_weights->output_weight.int8_kernel),
                 ffn_weights->output_weight.weight_only_quant_scale,
+                reinterpret_cast<const uint8_t*>(ffn_weights->intermediate_weight2.int8_kernel), // not used
+                ffn_weights->intermediate_weight2.weight_only_quant_scale, //Not used
                 m,
                 hidden_units_,
                 inter_size_,
@@ -469,13 +471,13 @@ void FfnLayer<T>::allocateBuffer(size_t token_num, int moe_k, bool use_moe)
         size_t ws_size_moe = 0;
         if (int8_mode_ == 0) {
             FT_CHECK_WITH_INFO(moe_fc_runner_.get() != NULL, "moe runner was not initialized.");
-            ws_size_moe = moe_fc_runner_->getWorkspaceSize(token_num, hidden_units_, inter_size_, expert_num_, moe_k);
+            ws_size_moe = moe_fc_runner_->getWorkspaceSize(token_num, hidden_units_, inter_size_, expert_num_, moe_k, use_gated_activation_);
         }
         else if (int8_mode_ == 1) {
             FT_CHECK_WITH_INFO(moe_int8_weight_only_fc_runner_.get() != NULL,
                                "weight only moe runner was not initialized.");
             ws_size_moe = moe_int8_weight_only_fc_runner_->getWorkspaceSize(
-                token_num, hidden_units_, inter_size_, expert_num_, moe_k);
+                token_num, hidden_units_, inter_size_, expert_num_, moe_k, use_gated_activation_);
         }
 
         moe_fc_workspace_ = (char*)allocator_->reMalloc(moe_fc_workspace_, sizeof(char) * ws_size_moe, false);
@@ -694,7 +696,7 @@ SiluFfnLayer<T>::SiluFfnLayer(size_t           max_batch_size,
                 head_num,
                 size_per_head,
                 expert_num,
-                1,
+                moe_frequency,
                 inter_size,
                 stream,
                 cublas_wrapper,

@@ -31,6 +31,7 @@
 
 #include "src/fastertransformer/kernels/moe_kernels.h"
 #include "src/fastertransformer/utils/cuda_utils.h"
+#include "src/fastertransformer/kernels/activation_kernels.h"
 
 #ifndef CUDART_VERSION
 #error CUDART_VERSION Undefined!
@@ -47,6 +48,42 @@
 namespace fastertransformer {
 
 static constexpr int WARP_SIZE = 32;
+
+
+// ============================== Gated Activation =================================
+// This is for llama architecture
+
+template <class T>
+__global__ void doMulKernel(
+    T* output, const T* gemm_result, const int64_t* num_valid_tokens_ptr, size_t inter_size)
+{
+    const int tid = threadIdx.x;
+    const int token = blockIdx.x;
+    if (tid >= inter_size)
+    {
+        return;
+    }
+
+    output = output + token * inter_size;
+    gemm_result = gemm_result + token * inter_size;
+    for (int i = tid; i < inter_size; i += blockDim.x)
+    {
+        T fc1_value = output[i];
+        T fc3_value = gemm_result[i];
+        float gate_value = 1.0;
+        output[i] = fc3_value * fc1_value;
+    }
+}
+
+template <typename T>
+void doMul(T* output, const T* gemm_result, const int64_t* num_valid_tokens_ptr, int inter_size,
+    int num_tokens, cudaStream_t stream)
+{
+    const int blocks = num_tokens;
+    const int threads = std::min(inter_size, 1024);
+
+    doMulKernel<<<blocks, threads, 0, stream>>>(output, gemm_result, num_valid_tokens_ptr, inter_size);
+}
 
 // ====================== Softmax things ===============================
 // We have our own implementation of softmax here so we can support transposing the output
@@ -554,7 +591,7 @@ CutlassMoeFCRunner<T, WeightType, Enable>::CutlassMoeFCRunner()
 
 template<typename T, typename WeightType, typename Enable>
 size_t CutlassMoeFCRunner<T, WeightType, Enable>::getWorkspaceSize(
-    const int num_rows, const int hidden_size, const int inter_size, const int num_experts, const int k)
+    const int num_rows, const int hidden_size, const int inter_size, const int num_experts, const int k, bool use_gated_activation)
 {
 
     FT_LOG_DEBUG(__PRETTY_FUNCTION__);
@@ -565,9 +602,9 @@ size_t CutlassMoeFCRunner<T, WeightType, Enable>::getWorkspaceSize(
     int       num_softmax_outs = 0;
 
     const bool is_pow_2 = (num_experts != 0) && ((num_experts & (num_experts - 1)) == 0);
-    if (!is_pow_2 || num_experts > 256) {
-        num_softmax_outs = pad_to_multiple_of_16(num_rows * num_experts);
-    }
+    // if (!is_pow_2 || num_experts > 256) {
+    num_softmax_outs = pad_to_multiple_of_16(num_rows * num_experts);
+    // }
 
     // softmax output, permuted_rows and permuted_experts have moved to outside of moe kernel, allocate them
     // in Encoder or Decoder before invoking FfnLayer forward.
@@ -576,22 +613,53 @@ size_t CutlassMoeFCRunner<T, WeightType, Enable>::getWorkspaceSize(
     total_ws_bytes += padded_experts * sizeof(int64_t);        // Hold total_rows_before_expert_
     total_ws_bytes += num_softmax_outs * sizeof(T);
     const int bytes_for_fc1_result = interbuf_size * sizeof(T);
-    const int sorter_ws_size_bytes = pad_to_multiple_of_16(sorter_.getWorkspaceSize(num_rows));
+    // const int sorter_ws_size_bytes = pad_to_multiple_of_16(sorter_.getWorkspaceSize(num_rows));
+    const int bytes_for_fc3_result = interbuf_size * sizeof(T);
+    const int sorter_ws_size_bytes = pad_to_multiple_of_16(sorter_.getWorkspaceSize(num_rows * k));
     sorter_.update_num_experts(num_experts);
 
     int bytes_for_intermediate_and_sorting = bytes_for_fc1_result;
-    if (sorter_ws_size_bytes > bytes_for_fc1_result) {
-        int remaining_bytes = pad_to_multiple_of_16(sorter_ws_size_bytes - bytes_for_fc1_result);
-        bytes_for_intermediate_and_sorting += remaining_bytes;
+  
+    if (use_gated_activation) {
+        if (sorter_ws_size_bytes > bytes_for_fc1_result * 2) {
+            int remaining_bytes = pad_to_multiple_of_16(sorter_ws_size_bytes - bytes_for_fc1_result * 2);
+            bytes_for_intermediate_and_sorting += remaining_bytes;
+        }
+        bytes_for_intermediate_and_sorting += bytes_for_fc3_result; // inter_buf (fc3)
+    } else {
+        if (sorter_ws_size_bytes > bytes_for_fc1_result) {
+            int remaining_bytes = pad_to_multiple_of_16(sorter_ws_size_bytes - bytes_for_fc1_result * 2);
+            bytes_for_intermediate_and_sorting += remaining_bytes;
+        }
     }
 
     total_ws_bytes += bytes_for_intermediate_and_sorting;  // intermediate (fc1) output + cub sorting workspace
     return total_ws_bytes;
 }
 
+/*
+moe kernel memory usage
+|^^^^^^^^^^^^^^^^|^^^^^^^^^^^^^^^^^^|^^^^^^^^^^^^^^^|^^^^^^^^^^^^^^^^^^^^^^^^^^|
+| permuted_rows  | permuted_experts | permuted_data | total_rows_before_expert |
+|                |                  |               |                          |
+| [k, token_num] |  [k, token_num]  | [k*token_num, |  [expert_nums]           |
+|                |                  |  hidden_size] |                          |
+|                |                  |               |                          |
+|________________|__________________|_______________|__________________________|
+|^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^|^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^|
+|           fc1_result           |          fc3_result  (optional)        |
+|                                |                                        |
+|     [k, token_num, inter_size] |        [k, token_num, inter_size]      |
+|^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^|^^^^^^^^^^^^^|
+|                              sort                                       | sort expend |
+|^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^|^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^|^^^^^^^^^^^^^|
+|     softmax_output (optional)  |                                        |
+|    [token_num, num_experts]  |                                        |
+|________________________________|________________________________________|
+*/
 template<typename T, typename WeightType, typename Enable>
 void CutlassMoeFCRunner<T, WeightType, Enable>::configure_ws_ptrs(
-    char* ws_ptr, const int num_rows, const int hidden_size, const int inter_size, const int num_experts, const int k)
+    char* ws_ptr, const int num_rows, const int hidden_size, const int inter_size, const int num_experts, const int k, bool use_gated_activation)
 {
     FT_LOG_DEBUG(__PRETTY_FUNCTION__);
     const int buf_size       = pad_to_multiple_of_16(k * num_rows * hidden_size);
@@ -599,7 +667,6 @@ void CutlassMoeFCRunner<T, WeightType, Enable>::configure_ws_ptrs(
     const int padded_experts = pad_to_multiple_of_16(num_experts);
     const int num_moe_inputs = pad_to_multiple_of_16(k * num_rows);
     // const int num_softmax_outs = pad_to_multiple_of_16(num_rows * num_experts);
-
     source_rows_      = (int*)ws_ptr;
     permuted_rows_    = source_rows_ + num_moe_inputs;
     permuted_experts_ = permuted_rows_ + num_moe_inputs;
@@ -609,36 +676,53 @@ void CutlassMoeFCRunner<T, WeightType, Enable>::configure_ws_ptrs(
 
     fc1_result_ = (T*)(total_rows_before_expert_ + padded_experts);
 
+    if (use_gated_activation) {
+        inter_result_ = (T*)(fc1_result_ + interbuf_size);
+    } else {
+        inter_result_ = nullptr;
+    }
+
     const bool is_pow_2 = (num_experts != 0) && ((num_experts & (num_experts - 1)) == 0);
-    if (!is_pow_2 || num_experts > 256) {
+    // if (!is_pow_2 || num_experts > 256) {
+    if (use_gated_activation) {
+        softmax_out_ = (T*)(inter_result_ + interbuf_size);
+    } else {
         softmax_out_ = (T*)(fc1_result_ + interbuf_size);
     }
-    else {
-        softmax_out_ = nullptr;
-    }
+    // TODO: this seems to be wrong
+    // softmax_out_ = (T*)(fc1_result_ + interbuf_size);
+    // softmax_out_ = nullptr;
+    // }
+    // else {
+    //     std::cout << "Not expected";
+    //     softmax_out_ = nullptr;
+    // }
+
 }
 
 
-// template<typename T>
-// void topk_gating_sigmoid_kernelLauncher(const T*     input,
-//                                         const bool*  finished,
-//                                         T*           output,
-//                                         T*           sigmoid_temp_output,
-//                                         int*         indices,
-//                                         int*         source_row,
-//                                         const int    num_rows,
-//                                         const int    num_experts,
-//                                         const int    k,
-//                                         cudaStream_t stream)
-// {
-//     static constexpr int TPB = 256;
-//     FT_CHECK(softmax_temp_output != nullptr);
-//     // moe_softmax<T, TPB><<<num_rows, TPB, 0, stream>>>(input, finished, sigmoid_temp_output, num_experts);
-
-//     sigmoid_kernel(T* data, const int size, const float scale)
-//     moe_top_k<T, TPB><<<num_rows, TPB, 0, stream>>>(
-//         sigmoid_temp_output, finished, output, indices, source_row, num_experts, k);
-// }
+template<typename T>
+void topk_gating_sigmoid_kernelLauncher(const T*     input,
+                                        const bool*  finished, // always null for llama2
+                                        T*           output,
+                                        T*           sigmoid_temp_output,
+                                        int*         indices,
+                                        int*         source_row,
+                                        const int    num_rows,
+                                        const int    num_experts,
+                                        const int    k,
+                                        cudaStream_t stream)
+{
+    static constexpr int TPB = 256;
+    // moe_softmax<T, TPB><<<num_rows, TPB, 0, stream>>>(input, finished, sigmoid_temp_output, num_experts);
+    cudaDeviceSynchronize();
+    check_cuda_error(cudaGetLastError());
+    invokeSigmoid(input, sigmoid_temp_output, num_rows * num_experts, 1.0, stream);
+    cudaDeviceSynchronize();
+    check_cuda_error(cudaGetLastError());
+    moe_top_k<T, TPB><<<num_rows, TPB, 0, stream>>>(
+        sigmoid_temp_output, finished, output, indices, source_row, num_experts, k);
+}
 
 template<typename T, typename WeightType, typename Enable>
 void CutlassMoeFCRunner<T, WeightType, Enable>::run_moe_fc(const T*          input_activations,
@@ -649,7 +733,9 @@ void CutlassMoeFCRunner<T, WeightType, Enable>::run_moe_fc(const T*          inp
                                                            ActivationType    fc1_activation_type,
                                                            const WeightType* fc2_expert_weights,
                                                            const T*          fc2_scales,
-                                                           const int         num_rows, //batch size
+                                                           const WeightType* fc3_expert_weights,
+                                                           const T*          fc3_scales,
+                                                           const int         num_rows, //batch size * s
                                                            const int         hidden_size,
                                                            const int         inter_size,
                                                            const int         num_experts,
@@ -687,23 +773,35 @@ void CutlassMoeFCRunner<T, WeightType, Enable>::run_moe_fc(const T*          inp
                 "[FT Error][Run MoE FC] Scales are ignored for fp32/fp16/bf16 but received scale for FC2");
         }
     }
-
-    configure_ws_ptrs(workspace_ptr, num_rows, hidden_size, inter_size, num_experts, k);
-    topk_gating_softmax_kernelLauncher<T>(gating_output,
+    
+    bool use_gated_activation = (fc3_expert_weights != nullptr);
+    // std::cout << "inter size" <<inter_size;
+    configure_ws_ptrs(workspace_ptr, num_rows, hidden_size, inter_size, num_experts, k, use_gated_activation);
+    // topk_gating_softmax_kernelLauncher<T>(gating_output,
+    //                                       finished,
+    //                                       expert_scales,
+    //                                       softmax_out_,
+    //                                       expert_for_source_row,
+    //                                       source_rows_,
+    //                                       num_rows,
+    //                                       num_experts,
+    //                                       k,
+    //                                       stream);
+    topk_gating_sigmoid_kernelLauncher<T>(gating_output,
                                           finished,
                                           expert_scales,
                                           softmax_out_,
-                                          expert_for_source_row,
-                                          source_rows_,
+                                          expert_for_source_row, // indices, i -> expert_id map
+                                          source_rows_, // i -> i
                                           num_rows,
                                           num_experts,
                                           k,
                                           stream);
 
-#ifndef NDEBUG
+// #ifndef NDEBUG
     cudaDeviceSynchronize();
     check_cuda_error(cudaGetLastError());
-#endif
+// #endif
 
     const int sorter_ws_size_bytes = pad_to_multiple_of_16(sorter_.getWorkspaceSize(k * num_rows));
     sorter_.run((void*)fc1_result_,
@@ -714,7 +812,7 @@ void CutlassMoeFCRunner<T, WeightType, Enable>::run_moe_fc(const T*          inp
                 permuted_rows_,
                 k * num_rows,
                 stream);
-
+    // std::cout<<"after sort";
 #ifndef NDEBUG
     cudaDeviceSynchronize();
     check_cuda_error(cudaGetLastError());
@@ -730,22 +828,23 @@ void CutlassMoeFCRunner<T, WeightType, Enable>::run_moe_fc(const T*          inp
                                           k,
                                           stream);
 
-    //topk_gating_sigmoid_kernelLauncher<T>(gating_output,
-    //                                       finished,
-    //                                       expert_scales,
-    //                                       softmax_out_,
-    //                                       expert_for_source_row, // indices, i -> expert_id map
-    //                                       source_rows_, // i -> i
-    //                                       num_rows,
-    //                                       num_experts,
-    //                                       k,
-    //                                       stream);
+    // std::cout<<"after initialzie moe";
 #ifndef NDEBUG
     cudaDeviceSynchronize();
     check_cuda_error(cudaGetLastError());
 #endif
 
     const int expanded_active_expert_rows = k * active_rows;
+
+    // int tempa[pad_to_multiple_of_16(k * num_rows)];
+    // cudaMemcpy(tempa, permuted_experts_, num_rows*sizeof(int), cudaMemcpyDeviceToHost);
+    // cudaDeviceSynchronize();
+    // for(int i = 0 ;i < k * num_rows; i++) {
+    //     std::cout<< "i" << i << " ";
+    //     std::cout << tempa[i] << "\n";
+    // }
+
+
     compute_total_rows_before_expert(
         permuted_experts_, expanded_active_expert_rows, num_experts, total_rows_before_expert_, stream);
 
@@ -753,7 +852,46 @@ void CutlassMoeFCRunner<T, WeightType, Enable>::run_moe_fc(const T*          inp
     cudaDeviceSynchronize();
     check_cuda_error(cudaGetLastError());
 #endif
+    // std::cout << "num eperts" << num_experts;
+    // std::cout << "use null";
+    // std::cout<<fc3_expert_weights;
+    // std::cout<<fc1_expert_weights;
+    //  std::cout<<permuted_data_;
+    //  moe_gemm_runner_.moe_gemm((T*)workspace_ptr,
+    //                                 fc3_expert_weights,
+    //                                 fc3_scales,
+    //                                 inter_result_,
+    //                                 total_rows_before_expert_,
+    //                                 expanded_active_expert_rows,
+    //                                 inter_size,
+    //                                 hidden_size,
+    //                                 num_experts,
+    //                                 stream);
 
+    // std::cout << "after randm  moe";
+    // int64_t temp[num_experts];
+    // cudaMemcpy(temp, total_rows_before_expert_, num_experts*sizeof(int64_t), cudaMemcpyDeviceToHost);
+    // cudaDeviceSynchronize();
+    // for(int i = 0 ;i < num_experts; i++) {
+    //     std::cout<< "i" << i << " ";
+    //     std::cout << temp[i];
+    // }
+
+    // std::cout<<"tetmp test";
+    // std::cout<<pad_to_multiple_of_16(num_rows * inter_size)*2;
+    // char * tempa  = (char*)malloc(pad_to_multiple_of_16(num_rows * inter_size)*2);
+    // std::cout<<" test";
+    // std::cout<<tempa[0];
+    // std::cout<<"copy";
+    //  cudaMemcpy(fc1_result_, tempa, 1, cudaMemcpyHostToDevice);
+    // cudaMemcpy(fc1_result_, tempa, pad_to_multiple_of_16(num_rows * inter_size)*2, cudaMemcpyHostToDevice);
+    // cudaDeviceSynchronize();
+    // // std::cout<<"permuted experts:\n";
+    // // for(int i = 0 ;i < pad_to_multiple_of_16(num_rows * hidden_size)*2; i++) {
+    // //     std::cout<< "i" << i << " ";
+    // //     std::cout << tempa[i] << "\n";
+    // // }
+    // std::cout << "start calling gtemm";
     moe_gemm_runner_.moe_gemm_bias_act(permuted_data_,
                                        fc1_expert_weights,
                                        fc1_scales,
@@ -766,7 +904,28 @@ void CutlassMoeFCRunner<T, WeightType, Enable>::run_moe_fc(const T*          inp
                                        num_experts,
                                        fc1_activation_type,
                                        stream);
+    // std::cout<<"after moe_gemm_bias_act moe";
+#ifndef NDEBUG
+    cudaDeviceSynchronize();
+    check_cuda_error(cudaGetLastError());
+#endif
 
+    if (use_gated_activation) {
+
+        moe_gemm_runner_.moe_gemm(permuted_data_,
+                                    fc3_expert_weights,
+                                    fc3_scales,
+                                    inter_result_,
+                                    total_rows_before_expert_,
+                                    expanded_active_expert_rows,
+                                    inter_size,
+                                    hidden_size,
+                                    num_experts,
+                                    stream);
+        // std::cout<<"after moe_gemm";
+        doMul<T>(fc1_result_, inter_result_, total_rows_before_expert_, inter_size, num_rows * k, stream);
+
+    }
 #ifndef NDEBUG
     cudaDeviceSynchronize();
     check_cuda_error(cudaGetLastError());
@@ -782,11 +941,56 @@ void CutlassMoeFCRunner<T, WeightType, Enable>::run_moe_fc(const T*          inp
                               inter_size,
                               num_experts,
                               stream);
-
+    // std::cout<<"after moe_gemm 2";
 #ifndef NDEBUG
     cudaDeviceSynchronize();
     check_cuda_error(cudaGetLastError());
 #endif
+}
+
+template<typename T, typename WeightType, typename Enable>
+void CutlassMoeFCRunner<T, WeightType, Enable>::run_moe_fc(const T*          input_activations,
+                                                            const T*          gating_output,
+                                                            const WeightType* fc1_expert_weights,
+                                                            const T*          fc1_scales,
+                                                            const T*          fc1_expert_biases,
+                                                            ActivationType    fc1_activation_type,
+                                                            const WeightType* fc2_expert_weights,
+                                                            const T*          fc2_scales,
+                                                            const int         num_rows,
+                                                            const int         hidden_size,
+                                                            const int         inter_size,
+                                                            const int         num_experts,
+                                                            const int         k,
+                                                            char*             workspace_ptr,
+                                                            T*                fc2_result,
+                                                            T*                expert_scales,
+                                                            int*              expanded_source_row_to_expanded_dest_row,
+                                                            int*              expert_for_source_row,
+                                                            cudaStream_t      stream)
+{
+    FT_LOG_DEBUG(__PRETTY_FUNCTION__);
+    run_moe_fc(input_activations,
+                gating_output,
+                fc1_expert_weights,
+                fc1_scales,
+                fc1_expert_biases,
+                fc1_activation_type,
+                fc2_expert_weights,
+                fc2_scales,
+                nullptr,
+                nullptr,
+                num_rows,
+                hidden_size,
+                inter_size,
+                num_experts,
+                k,
+                workspace_ptr,
+                fc2_result,
+                expert_scales,
+                expanded_source_row_to_expanded_dest_row,
+                expert_for_source_row,
+                stream);
 }
 
 template<typename T, typename WeightType, typename Enable>
@@ -798,6 +1002,8 @@ void CutlassMoeFCRunner<T, WeightType, Enable>::run_moe_fc(const T*          inp
                                                            ActivationType    fc1_activation_type,
                                                            const WeightType* fc2_expert_weights,
                                                            const T*          fc2_scales,
+                                                           const WeightType* fc3_expert_weights,
+                                                           const T*          fc3_scales,
                                                            const int         num_rows,
                                                            const int         hidden_size,
                                                            const int         inter_size,
@@ -819,6 +1025,8 @@ void CutlassMoeFCRunner<T, WeightType, Enable>::run_moe_fc(const T*          inp
                fc1_activation_type,
                fc2_expert_weights,
                fc2_scales,
+               fc3_expert_weights,
+               fc3_scales,
                num_rows,
                hidden_size,
                inter_size,

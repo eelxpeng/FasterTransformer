@@ -357,6 +357,8 @@ Llama<T>::Llama(size_t                              head_num,
         local_vacab_size = ceil(local_vacab_size / 8.f) * 8;
     }
     vocab_size_padded_ = (size_t)local_vacab_size * tensor_para_.world_size_;
+    std::cout << "Llama correct constructor being called";
+    std::cout << moe_frequency;
     initialize();
 }
 
@@ -918,7 +920,6 @@ void Llama<T>::forward(std::unordered_map<std::string, Tensor>*       output_ten
                             batch_size,
                             beam_width,
                             stream_);
-
     for (int step = max_input_length; step < (int)max_output_seq_len; step++) {
         const int src_indir_idx = (step - max_input_length) % 2;
         const int tgt_indir_idx = 1 - src_indir_idx;

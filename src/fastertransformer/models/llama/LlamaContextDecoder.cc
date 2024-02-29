@@ -71,7 +71,7 @@ void LlamaContextDecoder<T>::allocateBuffer()
 
 template<typename T>
 void LlamaContextDecoder<T>::allocateBuffer(size_t batch_size, size_t seq_len)
-{
+{   
     decoder_normed_input_ = reinterpret_cast<T*>(
         allocator_->reMalloc(decoder_normed_input_, sizeof(T) * batch_size * seq_len * hidden_units_, false));
     self_attn_output_ = reinterpret_cast<T*>(
@@ -97,7 +97,7 @@ void LlamaContextDecoder<T>::allocateBuffer(size_t batch_size, size_t seq_len)
     //TODO: @mreddie This seems can grow huge if we have larger bs and seq_len. Investigate if we can optimize this 
     fc2_result_ = reinterpret_cast<T*>(
         allocator_->malloc(sizeof(T) * pad_to_multiple_of_16(moe_k_ * batch_size * seq_len * hidden_units_), false));
-
+    std::cout<<"after allocate fc2_result_";
     is_allocate_buffer_ = true;
 }
 
@@ -451,7 +451,8 @@ void LlamaContextDecoder<T>::forward(std::unordered_map<std::string, Tensor>*   
                     {{"ffn_input",
                       Tensor{MEMORY_GPU, data_type, {h_token_num, (size_t)hidden_units_}, decoder_normed_input_}}});
 
-                bool use_moe = true;
+     
+                bool use_moe = ((l + 1) % moe_frequency_) == 0;
                 //TODO: @mreddie make top k also a parameter
                 size_t moe_k_ = 1;
                 TensorMap ffn_output_tensors;
@@ -465,7 +466,6 @@ void LlamaContextDecoder<T>::forward(std::unordered_map<std::string, Tensor>*   
                 }
                 else {
                     ffn_input_tensors.insert("moe_k", Tensor{MEMORY_CPU, TYPE_UINT64, {1}, &moe_k_});
-
                     ffn_output_tensors.insert("ffn_output",
                                             Tensor{MEMORY_GPU,
                                                     data_type,
@@ -552,7 +552,7 @@ void LlamaContextDecoder<T>::forward(std::unordered_map<std::string, Tensor>*   
             }
         }
     }
-
+    std::cout << "before invokeLookupHiddenStateOfLastToken";
     // TODO(bhsueh) We could optimize this point by only computing the last token for the last layer
     invokeLookupHiddenStateOfLastToken(output_tensors->at("last_token_hidden_units").getPtr<T>(),
                                        output_tensors->at("decoder_output").getPtr<T>(),
@@ -565,6 +565,7 @@ void LlamaContextDecoder<T>::forward(std::unordered_map<std::string, Tensor>*   
     if (is_free_buffer_after_forward_ == true) {
         freeBuffer();
     }
+    std::cout << "finish calling context decoder";
 }
 
 template class LlamaContextDecoder<float>;

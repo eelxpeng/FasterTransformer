@@ -359,7 +359,8 @@ public:
     struct KernelRunner<true, dummy> {
         CUTLASS_DEVICE
         static void run_kernel(Params const& params, SharedStorage& shared_storage)
-        {
+        {   
+            std::cout<<"test";
             //
             // These types shadow the type-level definitions and support the ability to implement
             // a 'transposed' GEMM that computes the transposed problems.
@@ -390,7 +391,7 @@ public:
                 GemmCoord problem_size = problem_visitor.problem_size();
                 int32_t   problem_idx  = problem_visitor.problem_index();
                 int32_t   cta_idx      = int32_t(problem_visitor.threadblock_idx());
-
+                std::cout<<"good";
                 GemmCoord grid_shape = problem_visitor.grid_shape(problem_size);
 
                 cutlass::gemm::GemmCoord threadblock_offset(
@@ -401,7 +402,7 @@ public:
                     problem_idx == 0 ? 0 : params.problem_visitor.last_row_for_problem[problem_idx - 1];
                 ElementA*                   ptr_A = reinterpret_cast<ElementA*>(params.ptr_A) + rows_to_jump * gemm_k;
                 typename LayoutA::LongIndex ldm_A = gemm_k;
-
+                
                 char*                       byte_ptr_B = ((char*)params.ptr_B) + problem_idx * bytes_per_expert_matrix;
                 ElementB*                   ptr_B      = reinterpret_cast<ElementB*>(byte_ptr_B);
                 typename LayoutB::LongIndex ldm_B =

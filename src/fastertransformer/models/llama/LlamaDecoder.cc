@@ -212,7 +212,7 @@ template<typename T>
 void LlamaDecoder<T>::forward(std::unordered_map<std::string, Tensor>*          output_tensors,
                               const std::unordered_map<std::string, Tensor>*    input_tensors,
                               const std::vector<LlamaDecoderLayerWeight<T>*>* gpt_decoder_layer_weight)
-{
+{   
     // input tensors:
     //      decoder_input [local_batch_size, hidden_dimension],
     //      finished [local_batch_size],
@@ -341,7 +341,7 @@ void LlamaDecoder<T>::forward(std::unordered_map<std::string, Tensor>*          
 
         
         TensorMap ffn_output_tensors;
-        bool use_moe = true;
+        bool use_moe = ((l + 1) % moe_frequency_) == 0;
         size_t moe_k_ = 1;
         if (!use_moe) {
             ffn_output_tensors.insert(
@@ -353,7 +353,6 @@ void LlamaDecoder<T>::forward(std::unordered_map<std::string, Tensor>*          
         }
         else {
             ffn_input_tensors.insert("moe_k", Tensor{MEMORY_CPU, TYPE_UINT64, {1}, &moe_k_});
-
             ffn_output_tensors.insert("ffn_output",
                                       Tensor{MEMORY_GPU,
                                              data_type,

@@ -637,7 +637,7 @@ __global__ void sigmoid_kernel(half2* data, const int size, const float scale)
 template<typename T>
 void invokeSigmoid(T* data, const int size, const float scale, cudaStream_t stream)
 {
-    if (std::is_same<T, float>::value || (size % 2 != 0)) {
+    if (std::is_same<T, float>::value || std::is_same<T, __nv_bfloat16>::value  || (size % 2 != 0)) {
         dim3 block(128);
         dim3 grid((size + 127) / 128);
         sigmoid_kernel<<<grid, block, 0, stream>>>(data, size, scale);
@@ -649,7 +649,36 @@ void invokeSigmoid(T* data, const int size, const float scale, cudaStream_t stre
     }
 }
 
+
+template<typename T>
+__global__ void sigmoid_kernel(const T* data, T* output, const int size, const float scale)
+{
+    const int index = (blockIdx.y * gridDim.x + blockIdx.x) * blockDim.x + threadIdx.x;
+    if (index < size) {
+        float val   = cuda_cast<float>(data[index]); 
+        val         = 1.0f / (1.0f + exp(-val)) * scale;
+        // output[index] = T(val);
+    }
+}
+
+
+template<typename T>
+void invokeSigmoid(const T* data, T* output, const int size, const float scale, cudaStream_t stream)
+{
+    dim3 block(128);
+    dim3 grid((size + 127) / 128);
+    sigmoid_kernel<<<grid, block, 0, stream>>>(data, output, size, scale);
+}
+
 template void invokeSigmoid(float* data, const int size, const float scale, cudaStream_t stream);
 template void invokeSigmoid(half* data, const int size, const float scale, cudaStream_t stream);
+#ifdef ENABLE_BF16
+template void invokeSigmoid(__nv_bfloat16* data, const int size, const float scale, cudaStream_t stream);
+#endif  // ENABLE_BF16
 
+template void invokeSigmoid(const float* data,   float* output, const int size, const float scale, cudaStream_t stream);
+template void invokeSigmoid(const half* data,   half* output, const int size, const float scale, cudaStream_t stream);
+#ifdef ENABLE_BF16
+template void invokeSigmoid(const __nv_bfloat16* data,   __nv_bfloat16* output, const int size, const float scale, cudaStream_t stream);
+#endif  // ENABLE_BF16
 }  // namespace fastertransformer

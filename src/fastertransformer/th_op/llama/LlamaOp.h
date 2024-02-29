@@ -260,7 +260,8 @@ public:
             std::cout << error.what();
             exit(-1);
         }
-        catch (...) {
+        catch (const std::exception &exc) {
+            std::cout << exc.what();
             std::cout << "Runtime error";
             exit(-1);
         }
@@ -300,12 +301,14 @@ public:
                 get_ptr<T>(weights_[i + 12 * layer_num_]);
             Llama_weights_.decoder_layer_weights[i]->post_attention_layernorm_weights.gamma = 
                 get_ptr<T>(weights_[i + 13 * layer_num_]);
+            Llama_weights_.decoder_layer_weights[i]->ffn_weights.gating_weight.kernel = 
+                get_ptr<T>(weights_[i + 14 * layer_num_]);    
         }
 
-        Llama_weights_.pre_decoder_embedding_table   = get_ptr<T>(weights_[14 * layer_num_ + 0]);
-        Llama_weights_.post_decoder_layernorm.beta   = get_ptr<T>(weights_[14 * layer_num_ + 1]);
-        Llama_weights_.post_decoder_layernorm.gamma  = get_ptr<T>(weights_[14 * layer_num_ + 2]);
-        Llama_weights_.post_decoder_embedding.kernel = get_ptr<T>(weights_[14 * layer_num_ + 3]);
+        Llama_weights_.pre_decoder_embedding_table   = get_ptr<T>(weights_[15 * layer_num_ + 0]);
+        Llama_weights_.post_decoder_layernorm.beta   = get_ptr<T>(weights_[15 * layer_num_ + 1]);
+        Llama_weights_.post_decoder_layernorm.gamma  = get_ptr<T>(weights_[15 * layer_num_ + 2]);
+        Llama_weights_.post_decoder_embedding.kernel = get_ptr<T>(weights_[15 * layer_num_ + 3]);
 
         Llama_weights_.setMaxSeqLen(max_seq_len_);
     }
