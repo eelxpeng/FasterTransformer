@@ -657,7 +657,7 @@ __global__ void sigmoid_kernel(const T* data, T* output, const int size, const f
     if (index < size) {
         float val   = cuda_cast<float>(data[index]); 
         val         = 1.0f / (1.0f + exp(-val)) * scale;
-        // output[index] = T(val);
+        output[index] = T(val);
     }
 }
 
