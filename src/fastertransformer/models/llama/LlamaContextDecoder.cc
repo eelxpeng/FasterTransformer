@@ -452,7 +452,7 @@ void LlamaContextDecoder<T>::forward(std::unordered_map<std::string, Tensor>*   
                       Tensor{MEMORY_GPU, data_type, {h_token_num, (size_t)hidden_units_}, decoder_normed_input_}}});
 
      
-                bool use_moe = ((l + 1) % moe_frequency_) == 0;
+                bool use_moe = num_moe_experts_ > 1 && ((l + 1) % moe_frequency_) == 0;
                 //TODO: @mreddie make top k also a parameter
                 size_t moe_k_ = 1;
                 TensorMap ffn_output_tensors;

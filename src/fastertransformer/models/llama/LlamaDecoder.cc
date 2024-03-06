@@ -341,7 +341,7 @@ void LlamaDecoder<T>::forward(std::unordered_map<std::string, Tensor>*          
 
         
         TensorMap ffn_output_tensors;
-        bool use_moe = ((l + 1) % moe_frequency_) == 0;
+        bool use_moe = num_moe_experts_ > 1 && ((l + 1) % moe_frequency_) == 0;
         size_t moe_k_ = 1;
         if (!use_moe) {
             ffn_output_tensors.insert(
