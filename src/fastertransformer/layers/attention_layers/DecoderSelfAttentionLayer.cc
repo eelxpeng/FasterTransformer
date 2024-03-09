@@ -100,7 +100,7 @@ void fusedQKV_masked_attention_dispatch(const T*     qkv_buf,
         params.k = reinterpret_cast<const DataType*>(reinterpret_cast<const int8_t*>(qkv_buf) + head_num * size_per_head);
         params.v = reinterpret_cast<const DataType*>(reinterpret_cast<const int8_t*>(qkv_buf) + (head_num + kv_head_num) * size_per_head);
     }
-    params.stride   = 3 * hidden_units;
+    params.stride   = (head_num + 2 * kv_head_num) * size_per_head;
     params.finished = const_cast<bool*>(finished);
 
     params.k_cache                  = reinterpret_cast<DataType*>(key_cache);
